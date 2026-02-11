@@ -1,0 +1,9 @@
+services:
+  sdcpy-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      SDCPY_STUDIO_MAX_WORKERS: "2"
