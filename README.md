@@ -6,8 +6,9 @@ Modern web studio for non-technical Scale-Dependent Correlation (SDC) workflows.
 
 - Job-based execution (`queued`/`running`/`succeeded`/`failed`)
 - CSV upload and paste-in input modes
-- Interactive SDC heatmaps
 - Interactive **2-way explorer** with side time series and hover-linked fragment highlighting
+- Significant-only matrix rendering with user-adjustable explorer alpha
+- Right-side `get_ranges_df` diagnostic panel (positive/negative/NS frequencies by TS1 bins)
 - Docker deployment
 
 ## Quick start

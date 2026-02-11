@@ -81,13 +81,23 @@ class SeriesPayload(BaseModel):
     ts2: list[float]
 
 
+class RangesPanelPayload(BaseModel):
+    """Compact payload for the side `get_ranges_df` diagnostic panel."""
+
+    bin_center: list[float]
+    positive_freq: list[float]
+    negative_freq: list[float]
+    ns_freq: list[float]
+
+
 class JobResultPayload(BaseModel):
     """Result payload returned for completed jobs."""
 
     summary: dict
     series: SeriesPayload
-    heatmap_all: MatrixPayload
-    heatmap_significant: MatrixPayload
+    matrix_r: MatrixPayload
+    matrix_p: MatrixPayload
+    ranges_panel: RangesPanelPayload
     strongest_links: list[dict]
     notes: list[str]
     runtime_seconds: float

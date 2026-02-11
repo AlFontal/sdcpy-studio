@@ -97,7 +97,9 @@ def test_submit_json_job_and_fetch_result():
     assert payload["series"]["index"][0] == 0
     assert len(payload["series"]["ts1"]) == len(ts1)
     assert len(payload["series"]["ts2"]) == len(ts2)
-    assert "heatmap_all" in payload
+    assert "matrix_r" in payload
+    assert "matrix_p" in payload
+    assert "ranges_panel" in payload
     assert "runtime_seconds" in payload
 
 

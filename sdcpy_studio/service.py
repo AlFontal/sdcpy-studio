@@ -10,6 +10,7 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 from sdcpy import compute_sdc
+from sdcpy.scale_dependent_correlation import SDCAnalysis
 
 from sdcpy_studio.schemas import SDCJobRequest
 
@@ -71,6 +72,62 @@ def _downsample_matrix(matrix: pd.DataFrame, max_side: int = MAX_HEATMAP_SIDE) -
     return matrix.iloc[::step_rows, ::step_cols]
 
 
+def _build_ranges_panel(sdc_df: pd.DataFrame, ts1: np.ndarray, ts2: np.ndarray, fragment_size: int) -> dict:
+    """Compute a compact `get_ranges_df` side-panel payload for TS1 bins."""
+    ts1_series = pd.Series(ts1, index=np.arange(len(ts1)))
+    ts2_series = pd.Series(ts2, index=np.arange(len(ts2)))
+
+    sdc_augmented = sdc_df.copy()
+    index_1 = ts1_series.index.to_numpy()
+    index_2 = ts2_series.index.to_numpy()
+    sdc_augmented["date_1"] = sdc_augmented["start_1"].astype(int).map(lambda i: index_1[i])
+    sdc_augmented["date_2"] = sdc_augmented["start_2"].astype(int).map(lambda i: index_2[i])
+
+    analysis = SDCAnalysis(
+        ts1=ts1_series,
+        ts2=ts2_series,
+        fragment_size=fragment_size,
+        sdc_df=sdc_augmented,
+    )
+    ranges = analysis.get_ranges_df(
+        ts=1,
+        alpha=0.05,
+        agg_func="mean",
+        bin_size=max(float(np.nanstd(ts1)) / 8.0, 0.1),
+    )
+
+    if ranges.empty:
+        return {
+            "bin_center": [],
+            "positive_freq": [],
+            "negative_freq": [],
+            "ns_freq": [],
+        }
+
+    ranges = ranges.copy()
+    ranges["bin_center"] = ranges["cat_value"].map(
+        lambda interval: float((interval.left + interval.right) / 2.0)
+    )
+    pivot = ranges.pivot_table(
+        index="bin_center",
+        columns="direction",
+        values="freq",
+        fill_value=0.0,
+        observed=False,
+    ).sort_index()
+
+    for column_name in ("Positive", "Negative", "NS"):
+        if column_name not in pivot.columns:
+            pivot[column_name] = 0.0
+
+    return {
+        "bin_center": [float(v) for v in pivot.index.to_numpy()],
+        "positive_freq": [float(v) for v in pivot["Positive"].to_numpy()],
+        "negative_freq": [float(v) for v in pivot["Negative"].to_numpy()],
+        "ns_freq": [float(v) for v in pivot["NS"].to_numpy()],
+    }
+
+
 def _matrix_payload(matrix: pd.DataFrame) -> dict:
     if matrix.empty:
         return {"x": [], "y": [], "z": []}
@@ -124,13 +181,20 @@ def run_sdc_job(payload: dict) -> dict:
             .loc[:, ["start_1", "stop_1", "start_2", "stop_2", "lag", "r", "p_value"]]
         )
 
-    all_matrix = valid.pivot(index="start_2", columns="start_1", values="r")
-    sig_matrix = valid.assign(
-        r_sig=np.where(valid["p_value"] <= request.alpha, valid["r"], np.nan)
-    ).pivot(index="start_2", columns="start_1", values="r_sig")
+    r_matrix_full = valid.pivot(index="start_2", columns="start_1", values="r")
+    p_matrix_full = valid.pivot(index="start_2", columns="start_1", values="p_value")
+    p_matrix_full = p_matrix_full.reindex_like(r_matrix_full)
 
-    all_matrix = _downsample_matrix(all_matrix)
-    sig_matrix = _downsample_matrix(sig_matrix)
+    r_matrix = _downsample_matrix(r_matrix_full)
+    p_matrix = _downsample_matrix(p_matrix_full)
+    p_matrix = p_matrix.reindex(index=r_matrix.index, columns=r_matrix.columns)
+
+    ranges_panel = _build_ranges_panel(
+        valid,
+        ts1=ts1,
+        ts2=ts2,
+        fragment_size=request.fragment_size,
+    )
 
     summary = {
         "series_length": int(len(ts1)),
@@ -164,8 +228,9 @@ def run_sdc_job(payload: dict) -> dict:
             "ts1": [float(v) for v in ts1],
             "ts2": [float(v) for v in ts2],
         },
-        "heatmap_all": _matrix_payload(all_matrix),
-        "heatmap_significant": _matrix_payload(sig_matrix),
+        "matrix_r": _matrix_payload(r_matrix),
+        "matrix_p": _matrix_payload(p_matrix),
+        "ranges_panel": ranges_panel,
         "strongest_links": strongest.to_dict(orient="records") if not strongest.empty else [],
         "notes": notes,
         "runtime_seconds": float(runtime_seconds),
