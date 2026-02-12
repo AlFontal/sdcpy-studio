@@ -1,13 +1,35 @@
 const statusText = document.getElementById("status_text");
 const statusError = document.getElementById("status_error");
+const statusProgressWrap = document.getElementById("status_progress_wrap");
+const statusProgressBar = document.getElementById("status_progress_bar");
+const statusProgressMeta = document.getElementById("status_progress_meta");
+
 const summaryStats = document.getElementById("summary_stats");
 const summaryNotes = document.getElementById("summary_notes");
 const linksTableBody = document.querySelector("#links_table tbody");
+const analysisSettingsDetails = document.getElementById("analysis_settings_details");
+
 const explorerAlphaInput = document.getElementById("explorer_alpha");
+
+const datasetFileInput = document.getElementById("dataset_file");
+const datasetDateSelect = document.getElementById("dataset_date_col");
+const datasetTs1Select = document.getElementById("dataset_ts1_col");
+const datasetTs2Select = document.getElementById("dataset_ts2_col");
+const submitDatasetButton = document.getElementById("submit_dataset");
+const datasetMeta = document.getElementById("dataset_meta");
+const datasetPreviewHead = document.querySelector("#dataset_preview_table thead");
+const datasetPreviewBody = document.querySelector("#dataset_preview_table tbody");
+
+const downloadXlsxButton = document.getElementById("download_xlsx");
+const downloadPngButton = document.getElementById("download_png");
+const downloadSvgButton = document.getElementById("download_svg");
 
 let activePoll = null;
 let latestResult = null;
+let latestJobId = null;
+let latestDatasetId = null;
 let alphaRenderTimer = null;
+let datasetInspectToken = 0;
 
 function getConfig() {
   return {
@@ -42,6 +64,29 @@ function setStatus(text, isError = false) {
   statusText.textContent = text;
   if (!isError) {
     statusError.textContent = "";
+  }
+}
+
+function setDownloadButtons(enabled) {
+  downloadXlsxButton.disabled = !enabled;
+  downloadPngButton.disabled = !enabled;
+  downloadSvgButton.disabled = !enabled;
+}
+
+function updateProgress(progress, status) {
+  if (!progress || !Number.isFinite(progress.total) || progress.total <= 0) {
+    statusProgressWrap.classList.add("hidden");
+    statusProgressMeta.textContent = "";
+    return;
+  }
+
+  const pct = Math.max(0, Math.min(100, Math.round((progress.current / progress.total) * 100)));
+  statusProgressWrap.classList.remove("hidden");
+  statusProgressBar.style.width = `${pct}%`;
+  statusProgressMeta.textContent = `${progress.description} (${progress.current}/${progress.total})`;
+
+  if (status === "succeeded" || status === "failed") {
+    statusProgressBar.style.width = "100%";
   }
 }
 
@@ -103,16 +148,53 @@ function maskedSignificantMatrix(rMatrix, pMatrix, alpha) {
   );
 }
 
+function buildAxisTicks(labels, nTicks = 6) {
+  if (!labels?.length) {
+    return { tickvals: [], ticktext: [] };
+  }
+  if (labels.length <= nTicks) {
+    const vals = labels.map((_, i) => i);
+    return { tickvals: vals, ticktext: labels.map((v) => String(v)) };
+  }
+
+  const step = Math.max(1, Math.floor((labels.length - 1) / (nTicks - 1)));
+  const vals = [];
+  for (let i = 0; i < labels.length; i += step) {
+    vals.push(i);
+  }
+  if (vals[vals.length - 1] !== labels.length - 1) {
+    vals.push(labels.length - 1);
+  }
+  return {
+    tickvals: vals,
+    ticktext: vals.map((idx) => {
+      const value = String(labels[idx]);
+      return value.length > 12 ? value.slice(0, 12) : value;
+    }),
+  };
+}
+
+function normalizePosition(value, maxIndex) {
+  const rounded = Math.round(Number(value));
+  if (!Number.isFinite(rounded)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(maxIndex, rounded));
+}
+
 function renderTwoWayExplorer(result) {
+  const containerId = "two_way_explorer";
+  const container = document.getElementById(containerId);
   if (!window.Plotly) {
+    if (container) {
+      container.textContent = "Plotly library unavailable in this environment.";
+    }
     return;
   }
 
-  const containerId = "two_way_explorer";
   const series = result.series;
   const matrixR = result.matrix_r;
   const matrixP = result.matrix_p;
-  const ranges = result.ranges_panel;
   const fragmentSize = Number(result.summary.fragment_size || 1);
   const alpha = getExplorerAlpha(result.summary.alpha || 0.05);
 
@@ -130,6 +212,9 @@ function renderTwoWayExplorer(result) {
     return;
   }
 
+  const labels = series.index.map((v) => String(v));
+  const positions = labels.map((_, idx) => idx);
+  const tickConfig = buildAxisTicks(labels, 6);
   const zSig = maskedSignificantMatrix(matrixR.z, matrixP.z, alpha);
 
   const xMin = Math.min(...matrixR.x);
@@ -138,7 +223,7 @@ function renderTwoWayExplorer(result) {
   const yMax = Math.max(...matrixR.y);
 
   const xFragEnd = Math.min(xMax, xMin + fragmentSize - 1);
-  const yFragEnd = Math.max(yMin, yMax - fragmentSize + 1);
+  const yFragEnd = Math.min(yMax, yMin + fragmentSize - 1);
 
   const bracketShapes = [
     {
@@ -146,9 +231,9 @@ function renderTwoWayExplorer(result) {
       xref: "x",
       yref: "y",
       x0: xMin,
-      y0: yMax,
+      y0: yMin,
       x1: xFragEnd,
-      y1: yMax,
+      y1: yMin,
       line: { color: "#111827", width: 5 },
     },
     {
@@ -156,7 +241,7 @@ function renderTwoWayExplorer(result) {
       xref: "x",
       yref: "y",
       x0: xMin,
-      y0: yMax,
+      y0: yMin,
       x1: xMin,
       y1: yFragEnd,
       line: { color: "#111827", width: 5 },
@@ -171,12 +256,6 @@ function renderTwoWayExplorer(result) {
       z: zSig,
       colorscale: "RdBu",
       zmid: 0,
-      colorbar: {
-        title: "Pearson r",
-        x: 1.02,
-        y: 0.44,
-        len: 0.62,
-      },
       xaxis: "x",
       yaxis: "y",
       hovertemplate:
@@ -186,23 +265,25 @@ function renderTwoWayExplorer(result) {
     {
       type: "scattergl",
       mode: "lines",
-      x: series.index,
+      x: positions,
       y: series.ts1,
       line: { color: "#111827", width: 1.6 },
       xaxis: "x2",
       yaxis: "y2",
-      hovertemplate: "t=%{x}<br>TS1=%{y:.3f}<extra></extra>",
+      customdata: labels,
+      hovertemplate: "t=%{customdata}<br>TS1=%{y:.3f}<extra></extra>",
       name: "TS1",
     },
     {
       type: "scattergl",
       mode: "lines",
       x: series.ts2,
-      y: series.index,
+      y: positions,
       line: { color: "#111827", width: 1.6 },
       xaxis: "x3",
       yaxis: "y3",
-      hovertemplate: "TS2=%{x:.3f}<br>t=%{y}<extra></extra>",
+      customdata: labels,
+      hovertemplate: "TS2=%{x:.3f}<br>t=%{customdata}<extra></extra>",
       name: "TS2",
     },
     {
@@ -229,74 +310,46 @@ function renderTwoWayExplorer(result) {
       showlegend: false,
       name: "TS2 segment",
     },
-    {
-      type: "scatter",
-      mode: "lines",
-      x: ranges?.positive_freq || [],
-      y: ranges?.bin_center || [],
-      xaxis: "x4",
-      yaxis: "y4",
-      line: { color: "#dc2626", width: 2.4 },
-      name: "Positive freq",
-      hovertemplate: "freq=%{x:.3f}<br>bin=%{y:.3f}<extra>Positive</extra>",
-    },
-    {
-      type: "scatter",
-      mode: "lines",
-      x: ranges?.negative_freq || [],
-      y: ranges?.bin_center || [],
-      xaxis: "x4",
-      yaxis: "y4",
-      line: { color: "#2563eb", width: 2.4 },
-      name: "Negative freq",
-      hovertemplate: "freq=%{x:.3f}<br>bin=%{y:.3f}<extra>Negative</extra>",
-    },
-    {
-      type: "scatter",
-      mode: "lines",
-      x: ranges?.ns_freq || [],
-      y: ranges?.bin_center || [],
-      xaxis: "x4",
-      yaxis: "y4",
-      line: { color: "#6b7280", width: 1.8, dash: "dot" },
-      name: "NS freq",
-      hovertemplate: "freq=%{x:.3f}<br>bin=%{y:.3f}<extra>NS</extra>",
-    },
   ];
 
   const layout = {
     title: `2-way explorer (significant only, alpha=${alpha.toFixed(3)})`,
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
-    margin: { t: 48, r: 38, b: 46, l: 60 },
+    margin: { t: 60, r: 74, b: 52, l: 56 },
     showlegend: false,
     xaxis: {
-      domain: [0.24, 0.76],
+      domain: [0.23, 0.82],
       title: "TS1 fragment start",
       range: [xMin - 0.5, xMax + 0.5],
       showgrid: true,
       gridcolor: "#e5e7eb",
+      zeroline: false,
     },
     yaxis: {
-      domain: [0.16, 0.68],
+      domain: [0.12, 0.72],
       title: "TS2 fragment start",
       range: [yMin - 0.5, yMax + 0.5],
       showgrid: true,
       gridcolor: "#e5e7eb",
       scaleanchor: "x",
       scaleratio: 1,
+      zeroline: false,
     },
     xaxis2: {
-      domain: [0.24, 0.76],
+      domain: [0.23, 0.82],
       anchor: "y2",
-      matches: "x",
+      range: [-0.5, positions.length - 0.5],
       title: "TS1",
+      tickmode: "array",
+      tickvals: tickConfig.tickvals,
+      ticktext: tickConfig.ticktext,
       showgrid: true,
       gridcolor: "#e5e7eb",
-      tickangle: 0,
+      zeroline: false,
     },
     yaxis2: {
-      domain: [0.72, 0.98],
+      domain: [0.76, 0.97],
       anchor: "x2",
       title: "",
       showgrid: true,
@@ -304,7 +357,7 @@ function renderTwoWayExplorer(result) {
       zeroline: false,
     },
     xaxis3: {
-      domain: [0.02, 0.22],
+      domain: [0.02, 0.20],
       anchor: "y3",
       title: "",
       showgrid: true,
@@ -312,27 +365,13 @@ function renderTwoWayExplorer(result) {
       zeroline: false,
     },
     yaxis3: {
-      domain: [0.16, 0.68],
+      domain: [0.12, 0.72],
       anchor: "x3",
-      matches: "y",
+      range: [-0.5, positions.length - 0.5],
+      tickmode: "array",
+      tickvals: tickConfig.tickvals,
+      ticktext: tickConfig.ticktext,
       title: "TS2",
-      showgrid: true,
-      gridcolor: "#e5e7eb",
-      zeroline: false,
-    },
-    xaxis4: {
-      domain: [0.78, 0.98],
-      anchor: "y4",
-      title: "freq",
-      range: [0, 1],
-      showgrid: true,
-      gridcolor: "#e5e7eb",
-      zeroline: false,
-    },
-    yaxis4: {
-      domain: [0.16, 0.68],
-      anchor: "x4",
-      title: "TS1 value bins",
       showgrid: true,
       gridcolor: "#e5e7eb",
       zeroline: false,
@@ -342,23 +381,20 @@ function renderTwoWayExplorer(result) {
         xref: "x",
         yref: "y",
         x: xMin + Math.max(2, fragmentSize * 0.45),
-        y: yMax - Math.max(1, fragmentSize * 0.06),
+        y: yMin + Math.max(1, fragmentSize * 0.05),
         text: `s = ${fragmentSize} periods`,
         showarrow: false,
         font: { family: "JetBrains Mono, monospace", size: 12, color: "#111827" },
       },
-      {
-        xref: "paper",
-        yref: "paper",
-        x: 0.88,
-        y: 0.71,
-        text: "get_ranges_df",
-        showarrow: false,
-        font: { size: 11, color: "#4b5563" },
-      },
     ],
     shapes: bracketShapes,
-    height: 780,
+    height: 760,
+  };
+  traces[0].colorbar = {
+    title: "Pearson r",
+    x: 0.86,
+    y: 0.42,
+    len: 0.60,
   };
 
   const config = { responsive: true, displaylogo: false };
@@ -387,13 +423,16 @@ function renderTwoWayExplorer(result) {
         return;
       }
 
-      const stop1 = Math.min(series.index.length - 1, start1 + fragmentSize - 1);
-      const stop2 = Math.min(series.index.length - 1, start2 + fragmentSize - 1);
+      const nSeries = positions.length;
+      const start1Idx = normalizePosition(start1, nSeries - 1);
+      const start2Idx = normalizePosition(start2, nSeries - 1);
+      const stop1 = Math.min(nSeries - 1, start1Idx + fragmentSize - 1);
+      const stop2 = Math.min(nSeries - 1, start2Idx + fragmentSize - 1);
 
-      const ts1SegX = series.index.slice(start1, stop1 + 1);
-      const ts1SegY = series.ts1.slice(start1, stop1 + 1);
-      const ts2SegX = series.ts2.slice(start2, stop2 + 1);
-      const ts2SegY = series.index.slice(start2, stop2 + 1);
+      const ts1SegX = positions.slice(start1Idx, stop1 + 1);
+      const ts1SegY = series.ts1.slice(start1Idx, stop1 + 1);
+      const ts2SegX = series.ts2.slice(start2Idx, stop2 + 1);
+      const ts2SegY = positions.slice(start2Idx, stop2 + 1);
 
       Plotly.restyle(gd, { x: [ts1SegX], y: [ts1SegY] }, [3]);
       Plotly.restyle(gd, { x: [ts2SegX], y: [ts2SegY] }, [4]);
@@ -402,10 +441,10 @@ function renderTwoWayExplorer(result) {
         type: "rect",
         xref: "x",
         yref: "y",
-        x0: start1 - 0.5,
-        x1: start1 + 0.5,
-        y0: start2 - 0.5,
-        y1: start2 + 0.5,
+        x0: start1Idx - 0.5,
+        x1: start1Idx + 0.5,
+        y0: start2Idx - 0.5,
+        y1: start2Idx + 0.5,
         line: { color: "#f97316", width: 1.5 },
         fillcolor: "rgba(249, 115, 22, 0.15)",
       };
@@ -414,6 +453,126 @@ function renderTwoWayExplorer(result) {
 
     gd.on("plotly_unhover", clearHighlight);
   });
+}
+
+function populateSelect(selectEl, values, includeBlank = false, blankLabel = "(none)") {
+  selectEl.innerHTML = "";
+  if (includeBlank) {
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = blankLabel;
+    selectEl.appendChild(blank);
+  }
+
+  values.forEach((value) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = value;
+    selectEl.appendChild(opt);
+  });
+}
+
+function renderDatasetPreview(columns, rows) {
+  if (!columns?.length) {
+    datasetPreviewHead.innerHTML = "";
+    datasetPreviewBody.innerHTML = "";
+    return;
+  }
+
+  datasetPreviewHead.innerHTML = `<tr>${columns.map((col) => `<th>${col}</th>`).join("")}</tr>`;
+  datasetPreviewBody.innerHTML = rows
+    .map(
+      (row) =>
+        `<tr>${columns
+          .map((col) => `<td>${row[col] ?? ""}</td>`)
+          .join("")}</tr>`
+    )
+    .join("");
+}
+
+function updateDatasetRunAvailability() {
+  const ready =
+    !!latestDatasetId &&
+    !!datasetTs1Select.value &&
+    !!datasetTs2Select.value &&
+    datasetTs1Select.value !== datasetTs2Select.value;
+  submitDatasetButton.disabled = !ready;
+}
+
+async function inspectDataset() {
+  const file = datasetFileInput.files[0];
+  if (!file) {
+    throw new Error("Please select a dataset CSV file first.");
+  }
+  const token = ++datasetInspectToken;
+  latestDatasetId = null;
+  updateDatasetRunAvailability();
+  datasetMeta.textContent = `Inspecting ${file.name}...`;
+
+  const formData = new FormData();
+  formData.append("dataset_file", file);
+
+  const response = await fetch("/api/v1/datasets/inspect", {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    datasetMeta.textContent = "";
+    throw new Error(data.detail || "Dataset inspection failed.");
+  }
+  if (token !== datasetInspectToken) {
+    return;
+  }
+
+  latestDatasetId = data.dataset_id;
+  datasetMeta.textContent = `${data.filename}: ${data.n_rows} rows x ${data.n_columns} columns. ` +
+    `Numeric: ${data.numeric_columns.join(", ") || "none"}. Date candidates: ${data.datetime_columns.join(", ") || "none"}.`;
+
+  const tsChoices = data.numeric_columns.length ? data.numeric_columns : data.columns;
+  populateSelect(datasetDateSelect, data.datetime_columns, true, "(no date column)");
+  populateSelect(datasetTs1Select, tsChoices);
+  populateSelect(datasetTs2Select, tsChoices);
+
+  if (data.suggested_date_column) {
+    datasetDateSelect.value = data.suggested_date_column;
+  }
+  if (tsChoices.length >= 2) {
+    datasetTs1Select.value = tsChoices[0];
+    datasetTs2Select.value = tsChoices[1];
+  }
+
+  renderDatasetPreview(data.columns, data.preview_rows);
+  updateDatasetRunAvailability();
+  if (analysisSettingsDetails) {
+    analysisSettingsDetails.open = true;
+  }
+}
+
+async function submitFromDataset() {
+  if (!latestDatasetId) {
+    throw new Error("Please inspect a dataset before submitting from selected columns.");
+  }
+
+  const payload = {
+    dataset_id: latestDatasetId,
+    ts1_column: datasetTs1Select.value,
+    ts2_column: datasetTs2Select.value,
+    date_column: datasetDateSelect.value || null,
+    ...getConfig(),
+  };
+
+  const response = await fetch("/api/v1/jobs/sdc/dataset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Unable to submit dataset-based analysis.");
+  }
+  await pollJob(data.job_id);
 }
 
 async function fetchResult(jobId) {
@@ -425,6 +584,7 @@ async function fetchResult(jobId) {
   const payload = await response.json();
   const result = payload.result;
   latestResult = result;
+  latestJobId = jobId;
 
   if (!Number.isFinite(Number(explorerAlphaInput.value))) {
     explorerAlphaInput.value = String(result.summary.alpha ?? 0.05);
@@ -433,6 +593,7 @@ async function fetchResult(jobId) {
   renderSummary(result.summary, result.notes, result.runtime_seconds);
   renderTwoWayExplorer(result);
   renderLinks(result.strongest_links || []);
+  setDownloadButtons(true);
 }
 
 async function pollJob(jobId) {
@@ -440,6 +601,8 @@ async function pollJob(jobId) {
     clearInterval(activePoll);
   }
 
+  setDownloadButtons(false);
+  latestJobId = jobId;
   setStatus(`Job ${jobId} submitted. Waiting for completion...`);
 
   activePoll = setInterval(async () => {
@@ -450,6 +613,7 @@ async function pollJob(jobId) {
       }
 
       const status = await response.json();
+      updateProgress(status.progress, status.status);
       setStatus(`Job ${jobId}: ${status.status}`);
 
       if (status.status === "succeeded") {
@@ -464,7 +628,7 @@ async function pollJob(jobId) {
       clearInterval(activePoll);
       statusError.textContent = String(error);
     }
-  }, 1500);
+  }, 1200);
 }
 
 async function submitFromText() {
@@ -491,41 +655,19 @@ async function submitFromText() {
   await pollJob(data.job_id);
 }
 
-async function submitFromCsv() {
-  const ts1File = document.getElementById("ts1_file").files[0];
-  const ts2File = document.getElementById("ts2_file").files[0];
-  if (!ts1File || !ts2File) {
-    throw new Error("Please select both CSV files.");
-  }
-
-  const cfg = getConfig();
-  const formData = new FormData();
-  formData.append("ts1_file", ts1File);
-  formData.append("ts2_file", ts2File);
-
-  Object.entries(cfg).forEach(([key, value]) => {
-    formData.append(key, String(value));
-  });
-
-  const response = await fetch("/api/v1/jobs/sdc/csv", {
-    method: "POST",
-    body: formData,
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail || "Unable to submit CSV analysis.");
-  }
-
-  await pollJob(data.job_id);
-}
-
 async function loadExample() {
   const response = await fetch("/api/v1/examples/synthetic");
   const data = await response.json();
   document.getElementById("ts1_text").value = data.ts1.join("\n");
   document.getElementById("ts2_text").value = data.ts2.join("\n");
   setStatus("Loaded synthetic example. You can run it directly.");
+}
+
+function triggerDownload(fmt) {
+  if (!latestJobId) {
+    return;
+  }
+  window.open(`/api/v1/jobs/${latestJobId}/download/${fmt}`, "_blank");
 }
 
 function attachHandlers() {
@@ -545,13 +687,36 @@ function attachHandlers() {
     }
   });
 
-  document.getElementById("submit_csv").addEventListener("click", async () => {
+  document.getElementById("submit_dataset").addEventListener("click", async () => {
     try {
-      await submitFromCsv();
+      await submitFromDataset();
     } catch (error) {
       statusError.textContent = String(error);
     }
   });
+
+  datasetFileInput.addEventListener("change", async () => {
+    if (!datasetFileInput.files?.length) {
+      latestDatasetId = null;
+      datasetMeta.textContent = "";
+      renderDatasetPreview([], []);
+      updateDatasetRunAvailability();
+      if (analysisSettingsDetails) {
+        analysisSettingsDetails.open = false;
+      }
+      return;
+    }
+    try {
+      await inspectDataset();
+      setStatus("Dataset inspected. Configure columns and run.");
+    } catch (error) {
+      statusError.textContent = String(error);
+    }
+  });
+
+  datasetDateSelect.addEventListener("change", updateDatasetRunAvailability);
+  datasetTs1Select.addEventListener("change", updateDatasetRunAvailability);
+  datasetTs2Select.addEventListener("change", updateDatasetRunAvailability);
 
   explorerAlphaInput.addEventListener("input", () => {
     if (!latestResult) {
@@ -562,6 +727,14 @@ function attachHandlers() {
     }
     alphaRenderTimer = setTimeout(() => renderTwoWayExplorer(latestResult), 180);
   });
+
+  downloadXlsxButton.addEventListener("click", () => triggerDownload("xlsx"));
+  downloadPngButton.addEventListener("click", () => triggerDownload("png"));
+  downloadSvgButton.addEventListener("click", () => triggerDownload("svg"));
 }
 
+setDownloadButtons(false);
+if (analysisSettingsDetails) {
+  analysisSettingsDetails.open = false;
+}
 attachHandlers();

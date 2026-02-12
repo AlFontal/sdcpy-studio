@@ -1,0 +1,25 @@
+{
+  "name": "sdcpy-studio",
+  "version": "1.0.0",
+  "description": "Modern web studio for non-technical Scale-Dependent Correlation (SDC) workflows.",
+  "scripts": {
+    "dev:api": "uv run uvicorn sdcpy_studio.main:create_app --factory --host 127.0.0.1 --port 8000",
+    "test:e2e": "playwright test",
+    "test:e2e:with-api": "node ./scripts/run-e2e-with-api.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlFontal/sdcpy-studio.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AlFontal/sdcpy-studio/issues"
+  },
+  "homepage": "https://github.com/AlFontal/sdcpy-studio#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

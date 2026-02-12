@@ -8,18 +8,27 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sdcpy_studio.jobs import JobManager
 from sdcpy_studio.schemas import (
+    DatasetInspectResponse,
+    JobProgressResponse,
     JobResultResponse,
     JobStatusResponse,
     JobSubmissionResponse,
+    SDCJobFromDatasetRequest,
     SDCJobRequest,
 )
-from sdcpy_studio.service import build_synthetic_example, parse_series_csv
+from sdcpy_studio.service import (
+    build_job_request_from_dataset,
+    build_synthetic_example,
+    export_job_artifact,
+    inspect_dataset_csv,
+    parse_series_csv,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -31,7 +40,12 @@ def _job_status_payload(job) -> JobStatusResponse:
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
-        error=job.error,
+        error=getattr(job, "error", None),
+        progress=JobProgressResponse(
+            current=int(getattr(job, "progress_current", 0)),
+            total=int(getattr(job, "progress_total", 1)),
+            description=str(getattr(job, "progress_description", "Unknown")),
+        ),
     )
 
 
@@ -65,9 +79,24 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/health")
+    async def health_root() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/api/v1/examples/synthetic")
     async def synthetic_example() -> dict[str, list[float]]:
         return build_synthetic_example()
+
+    @app.post("/api/v1/datasets/inspect", response_model=DatasetInspectResponse)
+    async def inspect_dataset(dataset_file: Annotated[UploadFile, File(...)]) -> DatasetInspectResponse:
+        filename = dataset_file.filename or "uploaded.csv"
+        content = await dataset_file.read()
+        try:
+            frame, metadata = inspect_dataset_csv(content, filename=filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        dataset = app.state.job_manager.register_dataset(frame, filename=filename)
+        return DatasetInspectResponse(dataset_id=dataset.dataset_id, **metadata)
 
     @app.post("/api/v1/jobs/sdc", response_model=JobSubmissionResponse)
     async def submit_job(payload: SDCJobRequest) -> JobSubmissionResponse:
@@ -92,8 +121,11 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         alpha: Annotated[float, Form()] = 0.05,
         max_memory_gb: Annotated[float, Form()] = 1.0,
     ) -> JobSubmissionResponse:
-        ts1 = parse_series_csv(await ts1_file.read())
-        ts2 = parse_series_csv(await ts2_file.read())
+        try:
+            ts1 = parse_series_csv(await ts1_file.read())
+            ts2 = parse_series_csv(await ts2_file.read())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         payload = SDCJobRequest(
             ts1=ts1,
@@ -116,6 +148,23 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             message="CSV job submitted. Poll /api/v1/jobs/{job_id} for completion.",
         )
 
+    @app.post("/api/v1/jobs/sdc/dataset", response_model=JobSubmissionResponse)
+    async def submit_job_dataset(payload: SDCJobFromDatasetRequest) -> JobSubmissionResponse:
+        dataset = app.state.job_manager.get_dataset(payload.dataset_id)
+        if dataset is None:
+            raise HTTPException(status_code=404, detail="Dataset not found or expired.")
+
+        try:
+            request = build_job_request_from_dataset(dataset.dataframe, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        job = app.state.job_manager.submit(request)
+        return JobSubmissionResponse(
+            job_id=job.job_id,
+            status=job.status,
+            message="Dataset job submitted. Poll /api/v1/jobs/{job_id} for completion.",
+        )
+
     @app.get("/api/v1/jobs/{job_id}", response_model=JobStatusResponse)
     async def get_job_status(job_id: str) -> JobStatusResponse:
         job = app.state.job_manager.get(job_id)
@@ -134,6 +183,27 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="Job still running.")
 
         return JobResultResponse(job_id=job_id, status="succeeded", result=job.result)
+
+    @app.get("/api/v1/jobs/{job_id}/download/{fmt}")
+    async def download_result(job_id: str, fmt: str) -> Response:
+        job = app.state.job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "failed":
+            raise HTTPException(status_code=422, detail=job.error or "Job failed.")
+        if job.status != "succeeded" or job.result is None:
+            raise HTTPException(status_code=409, detail="Job still running.")
+
+        try:
+            payload, media_type, filename = export_job_artifact(job.result, fmt)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+        )
 
     return app
 
