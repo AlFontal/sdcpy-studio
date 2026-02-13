@@ -18,6 +18,7 @@ class SDCJobRequest(BaseModel):
     ts2: list[float] = Field(..., description="Second time series values.")
 
     fragment_size: int = Field(24, ge=2, le=1024)
+    heatmap_step: int = Field(1, ge=1, le=64)
     n_permutations: int = Field(99, ge=1, le=999)
     method: Literal["pearson", "spearman", "kendall"] = "pearson"
 
@@ -28,6 +29,9 @@ class SDCJobRequest(BaseModel):
 
     alpha: float = Field(0.05, gt=0.0, lt=1.0)
     max_memory_gb: float = Field(1.0, ge=0.1, le=16.0)
+    ts1_label: str = "TS1"
+    ts2_label: str = "TS2"
+    index_values: list[str] | None = None
 
     @model_validator(mode="after")
     def _check_consistency(self) -> SDCJobRequest:
@@ -43,7 +47,29 @@ class SDCJobRequest(BaseModel):
             raise ValueError("`fragment_size` must be smaller than the series length.")
         if self.min_lag > self.max_lag:
             raise ValueError("`min_lag` must be <= `max_lag`.")
+        if self.index_values is not None and len(self.index_values) != len(self.ts1):
+            raise ValueError("`index_values` must match the series length when provided.")
         return self
+
+
+class SDCJobFromDatasetRequest(BaseModel):
+    """Request body for launching SDC from an inspected dataset."""
+
+    dataset_id: str
+    ts1_column: str
+    ts2_column: str
+    date_column: str | None = None
+
+    fragment_size: int = Field(24, ge=2, le=1024)
+    heatmap_step: int = Field(1, ge=1, le=64)
+    n_permutations: int = Field(99, ge=1, le=999)
+    method: Literal["pearson", "spearman", "kendall"] = "pearson"
+    two_tailed: bool = True
+    permutations: bool = True
+    min_lag: int = -120
+    max_lag: int = 120
+    alpha: float = Field(0.05, gt=0.0, lt=1.0)
+    max_memory_gb: float = Field(1.0, ge=0.1, le=16.0)
 
 
 class JobSubmissionResponse(BaseModel):
@@ -52,6 +78,14 @@ class JobSubmissionResponse(BaseModel):
     job_id: str
     status: Literal["queued", "running", "succeeded", "failed"]
     message: str
+
+
+class JobProgressResponse(BaseModel):
+    """Progress payload for running jobs."""
+
+    current: int
+    total: int
+    description: str
 
 
 class JobStatusResponse(BaseModel):
@@ -63,6 +97,21 @@ class JobStatusResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error: str | None = None
+    progress: JobProgressResponse | None = None
+
+
+class DatasetInspectResponse(BaseModel):
+    """Response payload for dataset inspection."""
+
+    dataset_id: str
+    filename: str
+    n_rows: int
+    n_columns: int
+    columns: list[str]
+    numeric_columns: list[str]
+    datetime_columns: list[str]
+    suggested_date_column: str | None = None
+    preview_rows: list[dict]
 
 
 class MatrixPayload(BaseModel):
@@ -76,18 +125,9 @@ class MatrixPayload(BaseModel):
 class SeriesPayload(BaseModel):
     """Series payload used by the interactive 2-way explorer."""
 
-    index: list[int]
+    index: list[int | str]
     ts1: list[float]
     ts2: list[float]
-
-
-class RangesPanelPayload(BaseModel):
-    """Compact payload for the side `get_ranges_df` diagnostic panel."""
-
-    bin_center: list[float]
-    positive_freq: list[float]
-    negative_freq: list[float]
-    ns_freq: list[float]
 
 
 class JobResultPayload(BaseModel):
@@ -97,7 +137,6 @@ class JobResultPayload(BaseModel):
     series: SeriesPayload
     matrix_r: MatrixPayload
     matrix_p: MatrixPayload
-    ranges_panel: RangesPanelPayload
     strongest_links: list[dict]
     notes: list[str]
     runtime_seconds: float

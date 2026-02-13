@@ -31,6 +31,7 @@ from sdcpy_studio.service import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+ONI_EXAMPLE_DATASET = BASE_DIR / "data" / "oni_temp_sa.csv"
 
 
 def _job_status_payload(job) -> JobStatusResponse:
@@ -61,8 +62,8 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         manager.shutdown()
 
     app = FastAPI(
-        title="sdcpy Studio",
-        description="Interactive Scale-Dependent Correlation analysis for non-technical users.",
+        title="SDCpy Studio",
+        description="A GUI for Interactive Scale-Dependent Correlation analysis.",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -73,7 +74,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        return templates.TemplateResponse(request, "index.html", {"title": "sdcpy Studio"})
+        return templates.TemplateResponse(request, "index.html", {"title": "SDCpy Studio"})
 
     @app.get("/api/v1/health")
     async def health() -> dict[str, str]:
@@ -86,6 +87,21 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
     @app.get("/api/v1/examples/synthetic")
     async def synthetic_example() -> dict[str, list[float]]:
         return build_synthetic_example()
+
+    @app.get("/api/v1/examples/oni-dataset", response_model=DatasetInspectResponse)
+    async def oni_dataset_example() -> DatasetInspectResponse:
+        if not ONI_EXAMPLE_DATASET.exists():
+            raise HTTPException(status_code=500, detail="Bundled ONI example dataset not found.")
+        try:
+            frame, metadata = inspect_dataset_csv(
+                ONI_EXAMPLE_DATASET.read_bytes(),
+                filename=ONI_EXAMPLE_DATASET.name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        dataset = app.state.job_manager.register_dataset(frame, filename=ONI_EXAMPLE_DATASET.name)
+        return DatasetInspectResponse(dataset_id=dataset.dataset_id, **metadata)
 
     @app.post("/api/v1/datasets/inspect", response_model=DatasetInspectResponse)
     async def inspect_dataset(dataset_file: Annotated[UploadFile, File(...)]) -> DatasetInspectResponse:
@@ -112,6 +128,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         ts1_file: Annotated[UploadFile, File(...)],
         ts2_file: Annotated[UploadFile, File(...)],
         fragment_size: Annotated[int, Form()] = 24,
+        heatmap_step: Annotated[int, Form()] = 1,
         n_permutations: Annotated[int, Form()] = 99,
         method: Annotated[str, Form()] = "pearson",
         two_tailed: Annotated[bool, Form()] = True,
@@ -131,6 +148,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             ts1=ts1,
             ts2=ts2,
             fragment_size=fragment_size,
+            heatmap_step=heatmap_step,
             n_permutations=n_permutations,
             method=method,
             two_tailed=two_tailed,

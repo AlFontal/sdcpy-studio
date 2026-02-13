@@ -1,12 +1,14 @@
-"""Asynchronous job management for the SDC web API."""
+"""Asynchronous job and dataset management for sdcpy-studio."""
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import RLock
 from uuid import uuid4
+
+import pandas as pd
 
 from sdcpy_studio.schemas import SDCJobRequest
 from sdcpy_studio.service import run_sdc_job
@@ -24,16 +26,30 @@ class JobRecord:
     completed_at: datetime | None = None
     result: dict | None = None
     error: str | None = None
+    progress_current: int = 0
+    progress_total: int = 1
+    progress_description: str = "Queued"
+
+
+@dataclass
+class DatasetRecord:
+    """In-memory record for one uploaded dataset."""
+
+    dataset_id: str
+    filename: str
+    created_at: datetime
+    dataframe: pd.DataFrame
 
 
 class JobManager:
-    """Simple asynchronous job manager using a process pool."""
+    """Asynchronous job manager using a thread pool plus in-memory dataset storage."""
 
     def __init__(self, max_workers: int = 2) -> None:
-        self._executor = ProcessPoolExecutor(max_workers=max_workers)
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._futures: dict[str, Future] = {}
+        self._datasets: dict[str, DatasetRecord] = {}
 
     def submit(self, request: SDCJobRequest) -> JobRecord:
         """Submit a new background computation."""
@@ -44,16 +60,35 @@ class JobManager:
             status="queued",
             request=request,
             created_at=created_at,
+            progress_current=0,
+            progress_total=1,
+            progress_description="Queued",
         )
 
         with self._lock:
             self._jobs[job_id] = record
 
-        future = self._executor.submit(run_sdc_job, request.model_dump(mode="python"))
+        def _progress_update(current: int, total: int, description: str) -> None:
+            with self._lock:
+                rec = self._jobs.get(job_id)
+                if rec is None:
+                    return
+                rec.progress_current = int(max(0, current))
+                rec.progress_total = int(max(1, total))
+                rec.progress_description = description
+
+        future = self._executor.submit(
+            run_sdc_job,
+            request.model_dump(mode="python"),
+            _progress_update,
+        )
 
         with self._lock:
             record.status = "running"
             record.started_at = datetime.now(timezone.utc)
+            record.progress_current = 0
+            record.progress_total = 1
+            record.progress_description = "Running"
             self._futures[job_id] = future
 
         future.add_done_callback(lambda fut, jid=job_id: self._finalize(jid, fut))
@@ -66,13 +101,33 @@ class JobManager:
             try:
                 record.result = future.result()
                 record.status = "succeeded"
+                record.progress_current = record.progress_total
+                record.progress_description = "Completed"
             except Exception as exc:  # pragma: no cover - exercised by API tests
                 record.status = "failed"
                 record.error = str(exc)
+                record.progress_description = "Failed"
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def register_dataset(self, dataframe: pd.DataFrame, filename: str) -> DatasetRecord:
+        """Register an uploaded dataset for later job submission by selected columns."""
+        dataset_id = uuid4().hex
+        record = DatasetRecord(
+            dataset_id=dataset_id,
+            filename=filename,
+            created_at=datetime.now(timezone.utc),
+            dataframe=dataframe,
+        )
+        with self._lock:
+            self._datasets[dataset_id] = record
+        return record
+
+    def get_dataset(self, dataset_id: str) -> DatasetRecord | None:
+        with self._lock:
+            return self._datasets.get(dataset_id)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

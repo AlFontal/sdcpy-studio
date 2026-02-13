@@ -19,10 +19,14 @@ test("dataset workflow runs analysis and renders outputs", async ({ page }, test
   writeFileSync(csvPath, buildDatasetCsv(72), "utf8");
 
   await page.goto("/");
+  await expect(page.getByTestId("analysis-settings-details")).toHaveJSProperty("open", false);
+  await expect(page.getByTestId("explorer-details")).toHaveJSProperty("open", false);
 
   await page.getByTestId("dataset-file-input").setInputFiles(csvPath);
   await expect(page.getByTestId("dataset-meta")).toContainText("rows", { timeout: 20_000 });
   await expect(page.getByTestId("analysis-settings-details")).toHaveJSProperty("open", true);
+  await expect(page.getByTestId("dataset-preview-details")).toHaveJSProperty("open", false);
+  await expect(page.getByTestId("analysis-settings-card").getByTestId("dataset-run-button")).toBeVisible();
 
   await page.getByTestId("n-permutations-input").fill("9");
   await page.getByTestId("fragment-size-input").fill("12");
@@ -35,13 +39,81 @@ test("dataset workflow runs analysis and renders outputs", async ({ page }, test
 
   await expect(page.getByTestId("status-text")).toContainText("succeeded", { timeout: 180_000 });
   await expect(page.getByTestId("summary-stats")).toContainText("Series length");
+  await expect(page.getByTestId("explorer-details")).toHaveJSProperty("open", true);
 
   const explorer = page.getByTestId("two-way-explorer");
   await expect(explorer).toBeVisible();
   await expect
     .poll(async () => {
-      const text = (await explorer.textContent()) ?? "";
-      return text.includes("2-way explorer") || text.includes("Plotly library unavailable");
+      return page.evaluate(() => {
+        const container = document.getElementById("two_way_explorer");
+        if (!container) {
+          return false;
+        }
+        const renderedPlot = container.matches(".js-plotly-plot") || !!container.querySelector(".js-plotly-plot");
+        const fallbackText = (container.textContent ?? "").includes("Plotly library unavailable");
+        return renderedPlot || fallbackText;
+      });
     })
     .toBe(true);
+
+  const plotChecks = await page.evaluate(() => {
+    const gd = document.querySelector(
+      "#two_way_explorer.js-plotly-plot, #two_way_explorer .js-plotly-plot"
+    ) as
+      | ({ data?: Array<{ name?: string; zmid?: number; zmin?: number; zmax?: number; type?: string }> } & Element)
+      | null;
+    if (!gd || !Array.isArray(gd.data)) {
+      return {
+        hasPlot: false,
+      };
+    }
+    const names = gd.data.map((trace) => String(trace.name ?? ""));
+    const hasRangesTrace = gd.data.some((trace) => {
+      const name = String(trace.name ?? "").toLowerCase();
+      return name.includes("range") || name.includes("freq");
+    });
+    const heatmap = gd.data.find((trace) => trace.type === "heatmap");
+    const topTs = gd.data.find((trace) => trace.name === "TS1");
+    const xaxisRange = (gd as { layout?: { xaxis?: { range?: [number, number] } } }).layout?.xaxis?.range;
+    const symmetricScale =
+      typeof heatmap?.zmin === "number" &&
+      typeof heatmap?.zmax === "number" &&
+      Math.abs(Math.abs(heatmap.zmin) - Math.abs(heatmap.zmax)) < 1e-6;
+    return {
+      hasPlot: true,
+      hasRangesTrace,
+      names,
+      zmid: heatmap?.zmid ?? null,
+      symmetricScale,
+      heatXFirst: Array.isArray(heatmap?.x) ? Number(heatmap.x[0]) : null,
+      topTracePoints: Array.isArray(topTs?.x) ? topTs.x.length : null,
+      xAxisRange: xaxisRange ?? null,
+    };
+  });
+  if (plotChecks.hasPlot) {
+    expect(plotChecks.hasRangesTrace).toBeFalsy();
+    expect(plotChecks.names).toContain("max positive (TS1)");
+    expect(plotChecks.names).toContain("min negative (TS1)");
+    expect(plotChecks.names).toContain("max positive (TS2)");
+    expect(plotChecks.names).toContain("min negative (TS2)");
+    expect(plotChecks.zmid).toBe(0);
+    expect(plotChecks.symmetricScale).toBeTruthy();
+    expect(plotChecks.heatXFirst).toBeCloseTo(5.5, 6);
+    expect(plotChecks.topTracePoints).toBe(72);
+    expect(plotChecks.xAxisRange?.[0]).toBeCloseTo(-0.5, 6);
+    expect(plotChecks.xAxisRange?.[1]).toBeCloseTo(71.5, 6);
+  }
+});
+
+test("oni sample can be loaded without uploading a file", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("load-oni-example-button").click();
+  await expect(page.getByTestId("dataset-meta")).toContainText("oni_temp_sa.csv", { timeout: 20_000 });
+  await expect(page.getByTestId("dataset-date-select")).toHaveValue("date");
+  await expect(page.getByTestId("dataset-ts1-select")).toHaveValue("oni_anomaly");
+  await expect(page.getByTestId("dataset-ts2-select")).toHaveValue("temp_anomaly_sa");
+  await expect(page.getByTestId("dataset-run-button")).toBeEnabled();
+  await expect(page.getByTestId("dataset-preview-details")).toHaveJSProperty("open", false);
 });

@@ -7,6 +7,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="shortcut icon" href="/static/favicon.svg" />
   <link rel="stylesheet" href="/static/app.css" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -15,56 +17,105 @@
   <div class="bg-grid" aria-hidden="true"></div>
   <main class="page">
     <section class="hero card">
-      <div>
+      <div class="hero-copy">
         <p class="eyebrow">Scale-Dependent Correlation</p>
         <h1>sdcpy Studio</h1>
         <p>
-          Upload a dataset, choose the mapped variables, run SDC asynchronously,
-          and inspect a publication-style two-way explorer with interactive diagnostics.
+          Upload a dataset, choose the variables of interest, run SDC asynchronously,
+          and inspect the results with interactive diagnostics.
         </p>
-      </div>
-      <div class="hero-meta">
-        <span class="chip">Asynchronous jobs</span>
-        <span class="chip">Significant-only explorer</span>
-        <span class="chip">Dataset inference</span>
-        <span class="chip">Downloadable outputs</span>
       </div>
     </section>
 
     <section class="layout">
       <article class="card span-12" data-testid="dataset-workflow-card">
-        <h2>Input Mode A: Dataset Workflow</h2>
-        <p class="hint">
-          Upload one table, auto-detect date/numeric columns, choose TS1/TS2, then run.
-        </p>
-        <div class="dataset-grid">
-          <label>Dataset CSV
-            <input id="dataset_file" data-testid="dataset-file-input" type="file" accept=".csv,text/csv" />
-          </label>
-          <label>Date column (optional)
-            <select id="dataset_date_col" data-testid="dataset-date-select"></select>
-          </label>
-          <label>Series 1 column
-            <select id="dataset_ts1_col" data-testid="dataset-ts1-select"></select>
-          </label>
-          <label>Series 2 column
-            <select id="dataset_ts2_col" data-testid="dataset-ts2-select"></select>
-          </label>
-        </div>
-        <div class="actions">
-          <button id="submit_dataset" data-testid="dataset-run-button" class="btn" disabled>Run from selected columns</button>
-        </div>
-        <p id="dataset_meta" data-testid="dataset-meta" class="hint"></p>
-        <div class="table-wrap preview-wrap">
-          <table id="dataset_preview_table" data-testid="dataset-preview-table">
-            <thead></thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <details id="input_workflow_details" data-testid="input-workflow-details" class="settings-details" open>
+          <summary>Input Workflow</summary>
+          <p class="hint">
+            Use dataset mode by default, and switch to pasted values only when needed.
+          </p>
+          <div class="mode-switch" role="tablist" aria-label="Input mode">
+            <button
+              id="mode_dataset"
+              data-testid="mode-dataset-button"
+              class="mode-btn is-active"
+              role="tab"
+              type="button"
+              aria-selected="true"
+              aria-controls="dataset_mode_panel"
+            >
+              Dataset file
+            </button>
+            <button
+              id="mode_paste"
+              data-testid="mode-paste-button"
+              class="mode-btn"
+              role="tab"
+              type="button"
+              aria-selected="false"
+              aria-controls="paste_mode_panel"
+            >
+              Paste values
+            </button>
+          </div>
+
+          <section id="dataset_mode_panel" class="mode-panel" role="tabpanel">
+            <div class="dataset-grid">
+              <label>Dataset CSV
+                <input id="dataset_file" data-testid="dataset-file-input" type="file" accept=".csv,text/csv" />
+              </label>
+              <label>Date column (optional)
+                <select id="dataset_date_col" data-testid="dataset-date-select"></select>
+              </label>
+              <label>Series 1 column
+                <select id="dataset_ts1_col" data-testid="dataset-ts1-select"></select>
+              </label>
+              <label>Series 2 column
+                <select id="dataset_ts2_col" data-testid="dataset-ts2-select"></select>
+              </label>
+            </div>
+            <div class="actions dataset-actions">
+              <button
+                id="load_oni_example"
+                data-testid="load-oni-example-button"
+                class="btn secondary"
+                type="button"
+              >
+                Load ONI example dataset
+              </button>
+            </div>
+            <p id="dataset_meta" data-testid="dataset-meta" class="hint"></p>
+            <details id="dataset_preview_details" data-testid="dataset-preview-details" class="preview-details" hidden>
+              <summary id="dataset_preview_summary">Dataset preview</summary>
+              <div class="table-wrap preview-wrap">
+                <table id="dataset_preview_table" data-testid="dataset-preview-table">
+                  <thead></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+
+          <section id="paste_mode_panel" class="mode-panel" role="tabpanel" hidden>
+            <p class="hint">One number per line, or comma-separated values.</p>
+            <div class="split">
+              <label>Series 1
+                <textarea id="ts1_text" rows="8" placeholder="0.11&#10;0.34&#10;0.28"></textarea>
+              </label>
+              <label>Series 2
+                <textarea id="ts2_text" rows="8" placeholder="0.08&#10;0.26&#10;0.33"></textarea>
+              </label>
+            </div>
+            <div class="actions">
+              <button id="load_example" class="btn secondary" type="button">Load synthetic example</button>
+              <button id="submit_text" class="btn" type="button">Run from pasted values</button>
+            </div>
+          </section>
+        </details>
       </article>
 
       <article class="card span-12" data-testid="analysis-settings-card">
-        <details id="analysis_settings_details" data-testid="analysis-settings-details" class="settings-details">
+        <details id="analysis_settings_details" data-testid="analysis-settings-details" class="settings-details" data-locked="true">
           <summary>Analysis Settings</summary>
           <p class="hint">
             Settings stay collapsed until a dataset is uploaded and inspected.
@@ -72,6 +123,9 @@
           <div class="form-grid">
             <label>Fragment size
               <input id="fragment_size" data-testid="fragment-size-input" type="number" min="2" value="24" />
+            </label>
+            <label>Heatmap step
+              <input id="heatmap_step" data-testid="heatmap-step-input" type="number" min="1" step="1" value="1" />
             </label>
             <label>Permutations
               <input id="n_permutations" data-testid="n-permutations-input" type="number" min="1" value="99" />
@@ -82,12 +136,6 @@
                 <option value="spearman">spearman</option>
                 <option value="kendall">kendall</option>
               </select>
-            </label>
-            <label>Alpha
-              <input id="alpha" data-testid="alpha-input" type="number" step="0.001" min="0.001" max="0.999" value="0.05" />
-            </label>
-            <label>Explorer alpha
-              <input id="explorer_alpha" data-testid="explorer-alpha-input" type="number" step="0.001" min="0.001" max="0.999" value="0.05" />
             </label>
             <label>Min lag
               <input id="min_lag" data-testid="min-lag-input" type="number" value="-120" />
@@ -103,73 +151,93 @@
             </label>
           </div>
         </details>
-      </article>
-
-      <article class="card span-6">
-        <h2>Input Mode B: Paste Values</h2>
-        <p class="hint">One number per line, or comma-separated values.</p>
-        <div class="split">
-          <label>Series 1
-            <textarea id="ts1_text" rows="8" placeholder="0.11\n0.34\n0.28"></textarea>
-          </label>
-          <label>Series 2
-            <textarea id="ts2_text" rows="8" placeholder="0.08\n0.26\n0.33"></textarea>
-          </label>
-        </div>
-        <div class="actions">
-          <button id="load_example" class="btn secondary">Load synthetic example</button>
-          <button id="submit_text" class="btn">Run from pasted values</button>
+        <div class="actions settings-run-actions">
+          <button id="submit_dataset" data-testid="dataset-run-button" class="btn" disabled>Run analysis</button>
         </div>
       </article>
 
-      <article class="card span-6" id="status_card" data-testid="status-card">
-        <h2>Job Status</h2>
-        <p id="status_text" data-testid="status-text">No active job.</p>
-        <div id="status_progress_wrap" class="progress-wrap hidden">
-          <div id="status_progress_bar" class="progress-bar"></div>
-        </div>
-        <p id="status_progress_meta" class="hint"></p>
+      <article class="card span-12 status-banner hidden" id="status_card" data-testid="status-card">
+        <p id="status_text" data-testid="status-text"></p>
         <p id="status_error" class="error"></p>
+      </article>
+
+      <article class="card span-12" data-testid="explorer-card">
+        <details id="explorer_details" data-testid="explorer-details" class="settings-details">
+          <summary>2-Way SDC Explorer</summary>
+          <div class="explorer-shell">
+            <aside class="explorer-controls">
+              <div class="plot-controls">
+                <label class="range-field">Significance alpha
+                  <div class="range-meta">
+                    <input
+                      id="plot_alpha"
+                      data-testid="plot-alpha-input"
+                      type="range"
+                      step="0.001"
+                      min="0"
+                      max="1"
+                      value="0.05"
+                    />
+                    <output id="plot_alpha_value" for="plot_alpha">0.050</output>
+                  </div>
+                </label>
+                <label>Fragment size
+                  <input
+                    id="plot_fragment_size"
+                    data-testid="plot-fragment-size-input"
+                    type="number"
+                    min="2"
+                    value="24"
+                  />
+                </label>
+                <label>Heatmap step
+                  <input
+                    id="plot_heatmap_step"
+                    data-testid="plot-heatmap-step-input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value="1"
+                  />
+                </label>
+                <button id="plot_apply" data-testid="plot-apply-button" class="btn" type="button">
+                  Recompute
+                </button>
+                <p class="hint plot-controls-hint">
+                  Alpha updates live. Changing fragment size or heatmap step re-runs analysis.
+                </p>
+              </div>
+              <section class="explorer-downloads" aria-label="downloads">
+                <h3>Download</h3>
+                <div class="download-grid">
+                  <button id="download_xlsx" class="download-tile" type="button" disabled>
+                    <span class="download-ext">.xlsx</span>
+                    <span class="download-label">Spread sheet</span>
+                  </button>
+                  <button id="download_png" class="download-tile" type="button" disabled>
+                    <span class="download-ext">.png</span>
+                    <span class="download-label">Raster image</span>
+                  </button>
+                  <button id="download_svg" class="download-tile" type="button" disabled>
+                    <span class="download-ext">.svg</span>
+                    <span class="download-label">Vector image</span>
+                  </button>
+                </div>
+              </section>
+            </aside>
+            <div class="explorer-stage">
+              <div id="two_way_explorer" data-testid="two-way-explorer" class="plot plot-large"></div>
+            </div>
+          </div>
+        </details>
       </article>
 
       <article class="card span-12" id="summary_card" data-testid="summary-card">
         <h2>Summary</h2>
         <div id="summary_stats" data-testid="summary-stats" class="summary-grid"></div>
         <ul id="summary_notes" class="notes"></ul>
-        <div class="actions">
-          <button id="download_xlsx" class="btn secondary" disabled>Download Excel</button>
-          <button id="download_png" class="btn secondary" disabled>Download PNG</button>
-          <button id="download_svg" class="btn secondary" disabled>Download SVG</button>
-        </div>
       </article>
 
-      <article class="card span-12" data-testid="explorer-card">
-        <h2>2-Way SDC Explorer</h2>
-        <p class="hint">
-          Hover any heatmap cell to highlight the compared time-series fragments on the top and left panels.
-        </p>
-        <div id="two_way_explorer" data-testid="two-way-explorer" class="plot plot-large"></div>
-      </article>
-
-      <article class="card span-12">
-        <h2>Strongest Significant Links</h2>
-        <div class="table-wrap">
-          <table id="links_table">
-            <thead>
-              <tr>
-                <th>start_1</th>
-                <th>stop_1</th>
-                <th>start_2</th>
-                <th>stop_2</th>
-                <th>lag</th>
-                <th>r</th>
-                <th>p_value</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </article>
     </section>
   </main>
 </body>

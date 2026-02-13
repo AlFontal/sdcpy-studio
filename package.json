@@ -4,6 +4,7 @@
   "description": "Modern web studio for non-technical Scale-Dependent Correlation (SDC) workflows.",
   "scripts": {
     "dev:api": "uv run uvicorn sdcpy_studio.main:create_app --factory --host 127.0.0.1 --port 8000",
+    "dev:api:reload": "uv run uvicorn sdcpy_studio.main:create_app --factory --host 127.0.0.1 --port 8000 --reload",
     "test:e2e": "playwright test",
     "test:e2e:with-api": "node ./scripts/run-e2e-with-api.mjs"
   },
