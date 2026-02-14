@@ -1,49 +1,70 @@
 # sdcpy-studio
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Engine](https://img.shields.io/badge/engine-sdcpy-111827.svg)](https://github.com/AlFontal/sdcpy)
+[![Framework](https://img.shields.io/badge/framework-FastAPI-059669.svg)](https://fastapi.tiangolo.com/)
+[![Deploy](https://img.shields.io/badge/deploy-Render-46E3B7.svg)](https://render.com/)
 
-Modern web studio for non-technical Scale-Dependent Correlation (SDC) workflows.
+<img src="https://raw.githubusercontent.com/AlFontal/sdcpy-app/master/static/sdcpy_logo_black.png" width="180" alt="sdcpy logo" />
 
-`sdcpy-studio` runs on top of [`sdcpy`](https://github.com/AlFontal/sdcpy), adds asynchronous execution for expensive jobs, and provides an interactive UI that includes:
+Interactive web studio for Scale-Dependent Correlation (SDC) analysis powered by [`sdcpy`](https://github.com/AlFontal/sdcpy).
 
-- Job-based execution (`queued`/`running`/`succeeded`/`failed`)
-- In-job progress updates (progress bar + status text)
-- CSV upload and paste-in input modes
-- Dataset workflow (single table upload, date/numeric inference, TS1/TS2 selection)
-- Interactive **2-way explorer** with side time series and hover-linked fragment highlighting
-- Significant-only matrix rendering with user-adjustable explorer alpha
-- Downloadable PNG/SVG generated directly by `sdcpy` `combi_plot(...)`
-- Result downloads (`.xlsx`, `.png`, `.svg`)
-- Docker deployment
++ Free software: MIT license
++ Repository: https://github.com/AlFontal/sdcpy-studio
 
-## Quick start
+## Features
+
+- Dataset-first workflow (CSV upload, date/numeric inference, TS1/TS2 mapping)
+- Optional paste-values workflow with automatic validation
+- Asynchronous SDC jobs with status polling
+- Interactive 2-way SDC explorer with hover-linked fragment highlighting
+- Significant-mask visualization + on-hover non-significant (`NS`) feedback
+- Downloadable artifacts (`.xlsx`, `.png`, `.svg`) with contextual filenames
+- Built-in ONI demo dataset bootstrap
+
+## Installation
+
+Clone and install with [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
+git clone https://github.com/AlFontal/sdcpy-studio.git
+cd sdcpy-studio
 uv sync --extra dev
-sdcpy-studio
 ```
 
-Open `http://localhost:8000`.
-
-## Docker
+## Run Locally
 
 ```bash
-docker compose -f docker-compose.yml up --build
+npm run dev:api
 ```
 
-## API
+Open `http://127.0.0.1:8000`.
 
+## API Endpoints
+
+- `GET /health`
 - `GET /api/v1/health`
 - `GET /api/v1/examples/synthetic`
+- `GET /api/v1/examples/oni-dataset`
+- `GET /api/v1/examples/oni-dataset.csv`
+- `POST /api/v1/datasets/inspect`
 - `POST /api/v1/jobs/sdc`
 - `POST /api/v1/jobs/sdc/csv`
-- `POST /api/v1/datasets/inspect`
 - `POST /api/v1/jobs/sdc/dataset`
 - `GET /api/v1/jobs/{job_id}`
 - `GET /api/v1/jobs/{job_id}/result`
 - `GET /api/v1/jobs/{job_id}/download/{fmt}` (`fmt` in `xlsx|png|svg`)
 
-## Why jobs?
+## Render Deployment
 
-SDC can be expensive when fragment size is small, lag range is wide, and permutations are high. The app immediately returns a `job_id`, computes in background workers, and the frontend polls status to keep the UI responsive.
+Render deployment is configured via `render.yaml` in this repository.
+
+After creating a new **Web Service** on Render and connecting this repo:
+
+1. Select `render.yaml` blueprint deploy (recommended), or create a Python Web Service manually.
+2. Use start command:
+   `uvicorn sdcpy_studio.main:create_app --factory --host 0.0.0.0 --port $PORT`
+3. Set health check path to `/health`.
 
 ## Development
 
@@ -51,4 +72,5 @@ SDC can be expensive when fragment size is small, lag range is wide, and permuta
 uv sync --extra dev
 ruff check .
 uv run pytest -q
+npm run test:e2e:with-api
 ```

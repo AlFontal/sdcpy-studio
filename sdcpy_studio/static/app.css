@@ -53,6 +53,26 @@ body {
   max-width: 72ch;
 }
 
+.hero-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.hero-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.hero-logo {
+  width: auto;
+  height: clamp(52px, 8.5vw, 88px);
+  filter: drop-shadow(0 6px 12px #0f172022);
+  flex: 0 0 auto;
+}
+
 .hero h1 {
   margin: 0;
   font-size: clamp(1.8rem, 5vw, 2.7rem);
@@ -71,6 +91,70 @@ body {
   font-size: 0.72rem;
   color: var(--accent-2);
   margin: 0 0 8px;
+}
+
+.hero-repo-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 210px;
+}
+
+.hero-repo-chip {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  text-decoration: none;
+  color: #0f1720;
+  border: 1px solid #cfd8e1;
+  border-radius: 9px;
+  background: #ffffffea;
+  padding: 7px 9px;
+  box-shadow: 0 4px 10px #0f172010;
+  transition: border-color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.hero-repo-chip:hover {
+  transform: translateY(-1px);
+  border-color: #8fb7d3;
+  box-shadow: 0 8px 16px #0f172018;
+}
+
+.hero-repo-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #1f2937;
+}
+
+.hero-repo-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.hero-repo-copy {
+  min-width: 0;
+}
+
+.hero-repo-copy strong {
+  display: block;
+  font-size: 0.76rem;
+  line-height: 1.1;
+}
+
+.hero-repo-copy span {
+  display: block;
+  margin-top: 1px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  color: #536071;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .layout {
@@ -607,6 +691,16 @@ th {
   .hero-copy {
     flex: 0 1 auto;
     width: 100%;
+  }
+
+  .hero-title-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .hero-repo-stack {
+    width: 100%;
+    min-width: 0;
   }
 
   .form-grid {

@@ -84,7 +84,7 @@ def test_root_page_renders():
 
     response = client.get("/")
     assert response.status_code == 200
-    assert "sdcpy Studio" in response.text
+    assert "Scale-Dependent Correlation" in response.text
 
 
 def test_load_oni_example_dataset():
