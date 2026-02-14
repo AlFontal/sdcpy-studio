@@ -32,7 +32,7 @@
         <details id="input_workflow_details" data-testid="input-workflow-details" class="settings-details" open>
           <summary>Input Workflow</summary>
           <p class="hint">
-            Use dataset mode by default, and switch to pasted values only when needed.
+            Load a dataset from CSV file or paste values directly. 
           </p>
           <div class="mode-switch" role="tablist" aria-label="Input mode">
             <button
@@ -98,6 +98,14 @@
 
           <section id="paste_mode_panel" class="mode-panel" role="tabpanel" hidden>
             <p class="hint">One number per line, or comma-separated values.</p>
+            <div class="split paste-name-grid">
+              <label>Series 1 name
+                <input id="ts1_name" data-testid="paste-ts1-name-input" type="text" value="TS1" />
+              </label>
+              <label>Series 2 name
+                <input id="ts2_name" data-testid="paste-ts2-name-input" type="text" value="TS2" />
+              </label>
+            </div>
             <div class="split">
               <label>Series 1
                 <textarea id="ts1_text" rows="8" placeholder="0.11&#10;0.34&#10;0.28"></textarea>
@@ -108,8 +116,8 @@
             </div>
             <div class="actions">
               <button id="load_example" class="btn secondary" type="button">Load synthetic example</button>
-              <button id="submit_text" class="btn" type="button">Run from pasted values</button>
             </div>
+            <p id="paste_validation" data-testid="paste-validation" class="hint">Paste values to validate.</p>
           </section>
         </details>
       </article>
@@ -117,9 +125,6 @@
       <article class="card span-12" data-testid="analysis-settings-card">
         <details id="analysis_settings_details" data-testid="analysis-settings-details" class="settings-details" data-locked="true">
           <summary>Analysis Settings</summary>
-          <p class="hint">
-            Settings stay collapsed until a dataset is uploaded and inspected.
-          </p>
           <div class="form-grid">
             <label>Fragment size
               <input id="fragment_size" data-testid="fragment-size-input" type="number" min="2" value="24" />

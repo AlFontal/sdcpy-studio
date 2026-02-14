@@ -30,6 +30,11 @@ const modeDatasetButton = document.getElementById("mode_dataset");
 const modePasteButton = document.getElementById("mode_paste");
 const datasetModePanel = document.getElementById("dataset_mode_panel");
 const pasteModePanel = document.getElementById("paste_mode_panel");
+const ts1TextInput = document.getElementById("ts1_text");
+const ts2TextInput = document.getElementById("ts2_text");
+const ts1NameInput = document.getElementById("ts1_name");
+const ts2NameInput = document.getElementById("ts2_name");
+const pasteValidationText = document.getElementById("paste_validation");
 
 const downloadXlsxButton = document.getElementById("download_xlsx");
 const downloadPngButton = document.getElementById("download_png");
@@ -45,6 +50,8 @@ let analysisSettingsUnlocked = false;
 let activeInputMode = "dataset";
 let statusHideTimer = null;
 let hasExpandedExplorerAfterFirstRun = false;
+let explorerResizeTimer = null;
+let pasteValidationTimer = null;
 
 function getConfig() {
   return {
@@ -109,6 +116,68 @@ function parseSeries(rawText) {
     .split(/[\n,;\s]+/)
     .map((v) => Number(v.trim()))
     .filter((v) => Number.isFinite(v));
+}
+
+function normalizeUserSeriesName(rawName, fallback) {
+  const cleaned = String(rawName ?? "").trim();
+  return cleaned || fallback;
+}
+
+function updatePasteValidationMessage(message, { isError = false, isValid = false } = {}) {
+  if (!pasteValidationText) {
+    return;
+  }
+  pasteValidationText.textContent = message;
+  pasteValidationText.classList.toggle("error", isError);
+  pasteValidationText.classList.toggle("valid", isValid);
+}
+
+function getPasteSeriesValidation({ updateMessage = false } = {}) {
+  const ts1 = parseSeries(ts1TextInput?.value || "");
+  const ts2 = parseSeries(ts2TextInput?.value || "");
+  const ts1Label = normalizeUserSeriesName(ts1NameInput?.value, "TS1");
+  const ts2Label = normalizeUserSeriesName(ts2NameInput?.value, "TS2");
+
+  if (!ts1.length && !ts2.length) {
+    if (updateMessage) {
+      updatePasteValidationMessage("Paste values to validate.");
+    }
+    return { valid: false, ts1, ts2, ts1Label, ts2Label };
+  }
+
+  if (!ts1.length || !ts2.length) {
+    if (updateMessage) {
+      updatePasteValidationMessage("Both series need at least one numeric value.", { isError: true });
+    }
+    return { valid: false, ts1, ts2, ts1Label, ts2Label };
+  }
+
+  if (ts1.length !== ts2.length) {
+    if (updateMessage) {
+      updatePasteValidationMessage(
+        `Length mismatch: Series 1 has ${ts1.length}, Series 2 has ${ts2.length}.`,
+        { isError: true }
+      );
+    }
+    return { valid: false, ts1, ts2, ts1Label, ts2Label };
+  }
+
+  if (ts1.length < 20) {
+    if (updateMessage) {
+      updatePasteValidationMessage(
+        `Need at least 20 points per series (currently ${ts1.length}).`,
+        { isError: true }
+      );
+    }
+    return { valid: false, ts1, ts2, ts1Label, ts2Label };
+  }
+
+  if (updateMessage) {
+    updatePasteValidationMessage(`Validation passed: ${ts1.length} paired points ready.`, {
+      isValid: true,
+    });
+  }
+  return { valid: true, ts1, ts2, ts1Label, ts2Label };
 }
 
 function setStatus(text, isError = false) {
@@ -370,8 +439,9 @@ function setInputMode(mode) {
     modePasteButton.classList.toggle("is-active", usePasteMode);
     modePasteButton.setAttribute("aria-selected", usePasteMode ? "true" : "false");
   }
-  if (submitDatasetButton) {
-    submitDatasetButton.hidden = usePasteMode;
+  updateDatasetRunAvailability();
+  if (usePasteMode) {
+    getPasteSeriesValidation({ updateMessage: true });
   }
 }
 
@@ -442,9 +512,17 @@ function renderTwoWayExplorer(result) {
     const idx = Math.max(0, Math.min(seriesLength - 1, Math.round(Number(startIdx) || 0)));
     return labelSeries[idx] ?? String(idx);
   };
-  const heatmapStartLabels = heatYStart.map((start2) => {
+  const heatmapHoverData = heatYStart.map((start2, rowIdx) => {
     const start2Label = startIndexToLabel(start2);
-    return heatXStart.map((start1) => [startIndexToLabel(start1), start2Label]);
+    return heatXStart.map((start1, colIdx) => {
+      const rValue = Number(matrixR?.z?.[rowIdx]?.[colIdx]);
+      const pValue = Number(matrixP?.z?.[rowIdx]?.[colIdx]);
+      const isSignificant =
+        Number.isFinite(rValue) && Number.isFinite(pValue) && pValue <= alpha;
+      const rLabel = Number.isFinite(rValue) ? rValue.toFixed(3) : "NA";
+      const statText = isSignificant ? `r=${rLabel}` : `NS (r=${rLabel})`;
+      return [startIndexToLabel(start1), start2Label, statText];
+    });
   });
   const centerToStartIndex = (centerPosition) =>
     Math.max(0, Math.min(maxStartIndex, Math.round(centerPosition - fragmentCenterOffset)));
@@ -721,15 +799,16 @@ function renderTwoWayExplorer(result) {
       x: heatX,
       y: heatY,
       z: zSig,
-      customdata: heatmapStartLabels,
+      customdata: heatmapHoverData,
       colorscale: rdBuWhiteCenter,
       zmin: -zAbsMax,
       zmax: zAbsMax,
       zmid: 0,
       zsmooth: false,
+      hoverongaps: true,
       xaxis: "x",
       yaxis: "y",
-      hovertemplate: "start_1=%{customdata[0]}<br>start_2=%{customdata[1]}<br>r=%{z:.3f}<extra></extra>",
+      hovertemplate: "start_1=%{customdata[0]}<br>start_2=%{customdata[1]}<br>%{customdata[2]}<extra></extra>",
       name: "significant",
       colorbar: {
         title: { text: corrLabel },
@@ -912,7 +991,7 @@ function renderTwoWayExplorer(result) {
       tickvals: sideTickConfig.tickvals,
       ticktext: sideTickConfig.ticktext,
       title: ts2Label,
-      titlefont: { size: tinyLayout ? 13 : 15 },
+      titlefont: { size: tinyLayout ? 11 : 13 },
       tickfont: { size: tinyLayout ? 10 : 11 },
       automargin: true,
       showgrid: true,
@@ -1048,7 +1127,7 @@ function renderTwoWayExplorer(result) {
 
     gd.on("plotly_hover", (event) => {
       const point = event?.points?.[0];
-      if (!point || point.curveNumber !== 2 || point.z === null || point.z === undefined) {
+      if (!point || point.curveNumber !== 2) {
         return;
       }
 
@@ -1173,12 +1252,26 @@ function renderDatasetPreview(columns, rows, { collapse = false } = {}) {
 }
 
 function updateDatasetRunAvailability() {
-  const ready =
+  if (!submitDatasetButton) {
+    return;
+  }
+
+  const datasetReady =
     !!latestDatasetId &&
     !!datasetTs1Select.value &&
     !!datasetTs2Select.value &&
     datasetTs1Select.value !== datasetTs2Select.value;
-  submitDatasetButton.disabled = !ready;
+  const pasteReady = getPasteSeriesValidation({ updateMessage: false }).valid;
+  const readyForActiveMode = activeInputMode === "paste" ? pasteReady : datasetReady;
+
+  setAnalysisSettingsUnlocked(readyForActiveMode);
+
+  if (activeInputMode === "paste") {
+    submitDatasetButton.disabled = !pasteReady;
+    return;
+  }
+
+  submitDatasetButton.disabled = !datasetReady;
 }
 
 function applyDatasetInspection(
@@ -1191,7 +1284,7 @@ function applyDatasetInspection(
   } = {}
 ) {
   latestDatasetId = data.dataset_id;
-  datasetMeta.textContent = `${data.filename}: ${data.n_rows} rows x ${data.n_columns} columns. ` +
+  datasetMeta.textContent = `${data.n_rows} rows x ${data.n_columns} columns. ` +
     `Numeric: ${data.numeric_columns.join(", ") || "none"}. Date candidates: ${data.datetime_columns.join(", ") || "none"}.`;
 
   const tsChoices = data.numeric_columns.length ? data.numeric_columns : data.columns;
@@ -1227,8 +1320,7 @@ function applyDatasetInspection(
   applyRecommendedFragmentSize(data.n_rows);
   renderDatasetPreview(data.columns, data.preview_rows, { collapse: collapsePreview });
   updateDatasetRunAvailability();
-  setAnalysisSettingsUnlocked(true);
-  if (analysisSettingsDetails) {
+  if (analysisSettingsDetails && analysisSettingsUnlocked) {
     analysisSettingsDetails.open = true;
   }
 }
@@ -1241,7 +1333,6 @@ async function inspectDataset() {
   const token = ++datasetInspectToken;
   latestDatasetId = null;
   updateDatasetRunAvailability();
-  setAnalysisSettingsUnlocked(false);
   datasetMeta.textContent = `Inspecting ${file.name}...`;
 
   const formData = new FormData();
@@ -1267,7 +1358,6 @@ async function loadOniExampleDataset() {
   const token = ++datasetInspectToken;
   latestDatasetId = null;
   updateDatasetRunAvailability();
-  setAnalysisSettingsUnlocked(false);
   datasetMeta.textContent = "Loading ONI sample dataset...";
   setInputMode("dataset");
   datasetFileInput.value = "";
@@ -1288,6 +1378,26 @@ async function loadOniExampleDataset() {
     preferredTs1Column: "oni_anomaly",
     preferredTs2Column: "temp_anomaly_sa",
   });
+  await syncOniFilenameInFileInput();
+}
+
+async function syncOniFilenameInFileInput() {
+  if (!datasetFileInput || typeof DataTransfer === "undefined" || typeof File === "undefined") {
+    return;
+  }
+  try {
+    const response = await fetch("/api/v1/examples/oni-dataset.csv");
+    if (!response.ok) {
+      return;
+    }
+    const blob = await response.blob();
+    const file = new File([blob], "oni_temp_sa.csv", { type: "text/csv" });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    datasetFileInput.files = transfer.files;
+  } catch (_error) {
+    // Best effort only. The ONI workflow is already loaded server-side.
+  }
 }
 
 async function submitFromDataset() {
@@ -1373,19 +1483,17 @@ async function pollJob(jobId) {
 }
 
 async function submitFromText() {
-  const ts1 = parseSeries(document.getElementById("ts1_text").value);
-  const ts2 = parseSeries(document.getElementById("ts2_text").value);
-  if (ts1.length < 2 || ts2.length < 2) {
-    throw new Error("Paste at least two numeric values for each series.");
-  }
-  if (ts1.length !== ts2.length) {
-    throw new Error("Pasted series must have the same length.");
+  const validation = getPasteSeriesValidation({ updateMessage: true });
+  if (!validation.valid) {
+    throw new Error("Please fix pasted series before running analysis.");
   }
 
   const payload = {
     ...getConfig(),
-    ts1,
-    ts2,
+    ts1: validation.ts1,
+    ts2: validation.ts2,
+    ts1_label: validation.ts1Label,
+    ts2_label: validation.ts2Label,
   };
 
   const response = await fetch("/api/v1/jobs/sdc", {
@@ -1405,9 +1513,21 @@ async function submitFromText() {
 async function loadExample() {
   const response = await fetch("/api/v1/examples/synthetic");
   const data = await response.json();
-  document.getElementById("ts1_text").value = data.ts1.join("\n");
-  document.getElementById("ts2_text").value = data.ts2.join("\n");
+  if (ts1TextInput) {
+    ts1TextInput.value = data.ts1.join("\n");
+  }
+  if (ts2TextInput) {
+    ts2TextInput.value = data.ts2.join("\n");
+  }
+  if (ts1NameInput && !ts1NameInput.value.trim()) {
+    ts1NameInput.value = "TS1";
+  }
+  if (ts2NameInput && !ts2NameInput.value.trim()) {
+    ts2NameInput.value = "TS2";
+  }
   applyRecommendedFragmentSize(data.ts1.length);
+  getPasteSeriesValidation({ updateMessage: true });
+  updateDatasetRunAvailability();
   setStatus("Loaded synthetic example. You can run it directly.");
 }
 
@@ -1435,17 +1555,9 @@ function attachHandlers() {
     }
   });
 
-  document.getElementById("submit_text").addEventListener("click", async () => {
-    try {
-      await submitFromText();
-    } catch (error) {
-      setStatusError(error);
-    }
-  });
-
   document.getElementById("submit_dataset").addEventListener("click", async () => {
     try {
-      await submitFromDataset();
+      await rerunActiveWorkflow();
     } catch (error) {
       setStatusError(error);
     }
@@ -1468,7 +1580,6 @@ function attachHandlers() {
       datasetMeta.textContent = "";
       renderDatasetPreview([], []);
       updateDatasetRunAvailability();
-      setAnalysisSettingsUnlocked(false);
       return;
     }
     try {
@@ -1483,7 +1594,7 @@ function attachHandlers() {
     analysisSettingsDetails.addEventListener("toggle", () => {
       if (!analysisSettingsUnlocked && analysisSettingsDetails.open) {
         analysisSettingsDetails.open = false;
-        setStatus("Upload a dataset first to unlock analysis settings.");
+        setStatus("Provide a valid dataset or pasted series to unlock analysis settings.");
       }
     });
   }
@@ -1491,6 +1602,29 @@ function attachHandlers() {
   datasetDateSelect.addEventListener("change", updateDatasetRunAvailability);
   datasetTs1Select.addEventListener("change", updateDatasetRunAvailability);
   datasetTs2Select.addEventListener("change", updateDatasetRunAvailability);
+
+  const schedulePasteValidation = () => {
+    if (pasteValidationTimer) {
+      clearTimeout(pasteValidationTimer);
+    }
+    pasteValidationTimer = setTimeout(() => {
+      getPasteSeriesValidation({ updateMessage: activeInputMode === "paste" });
+      updateDatasetRunAvailability();
+    }, 140);
+  };
+
+  if (ts1TextInput) {
+    ts1TextInput.addEventListener("input", schedulePasteValidation);
+  }
+  if (ts2TextInput) {
+    ts2TextInput.addEventListener("input", schedulePasteValidation);
+  }
+  if (ts1NameInput) {
+    ts1NameInput.addEventListener("input", schedulePasteValidation);
+  }
+  if (ts2NameInput) {
+    ts2NameInput.addEventListener("input", schedulePasteValidation);
+  }
 
   fragmentSizeInput.addEventListener("input", syncPlotControlsFromSettings);
   heatmapStepInput.addEventListener("input", syncPlotControlsFromSettings);
@@ -1551,6 +1685,16 @@ function attachHandlers() {
   downloadXlsxButton.addEventListener("click", () => triggerDownload("xlsx"));
   downloadPngButton.addEventListener("click", () => triggerDownload("png"));
   downloadSvgButton.addEventListener("click", () => triggerDownload("svg"));
+
+  window.addEventListener("resize", () => {
+    if (!latestResult) {
+      return;
+    }
+    if (explorerResizeTimer) {
+      clearTimeout(explorerResizeTimer);
+    }
+    explorerResizeTimer = setTimeout(() => renderTwoWayExplorer(latestResult), 170);
+  });
 }
 
 setDownloadButtons(false);

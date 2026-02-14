@@ -103,6 +103,16 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         dataset = app.state.job_manager.register_dataset(frame, filename=ONI_EXAMPLE_DATASET.name)
         return DatasetInspectResponse(dataset_id=dataset.dataset_id, **metadata)
 
+    @app.get("/api/v1/examples/oni-dataset.csv")
+    async def oni_dataset_csv() -> Response:
+        if not ONI_EXAMPLE_DATASET.exists():
+            raise HTTPException(status_code=500, detail="Bundled ONI example dataset not found.")
+        return Response(
+            content=ONI_EXAMPLE_DATASET.read_bytes(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{ONI_EXAMPLE_DATASET.name}"'},
+        )
+
     @app.post("/api/v1/datasets/inspect", response_model=DatasetInspectResponse)
     async def inspect_dataset(dataset_file: Annotated[UploadFile, File(...)]) -> DatasetInspectResponse:
         filename = dataset_file.filename or "uploaded.csv"

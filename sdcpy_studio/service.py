@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from collections.abc import Callable
 from time import perf_counter
 
@@ -16,6 +17,13 @@ from sdcpy.scale_dependent_correlation import SDCAnalysis
 from sdcpy_studio.schemas import SDCJobFromDatasetRequest, SDCJobRequest
 
 MAX_STRONGEST_LINKS = 100
+
+
+def _sanitize_filename_token(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", str(value).strip()).strip("_")
+    if not cleaned:
+        return fallback
+    return cleaned.lower()[:64]
 
 
 def _emit_progress(
@@ -313,11 +321,14 @@ def export_job_artifact(job_result: dict, fmt: str) -> tuple[bytes, str, str]:
     fmt_key = fmt.lower().strip()
 
     if fmt_key == "xlsx":
-        analysis, *_ = _restore_analysis(artifacts)
+        analysis, ts1_label, ts2_label, *_ = _restore_analysis(artifacts)
+        ts1_token = _sanitize_filename_token(ts1_label, "ts1")
+        ts2_token = _sanitize_filename_token(ts2_label, "ts2")
+        filename = f"sdc_{ts1_token}_{ts2_token}_{analysis.fragment_size}.xlsx"
         return (
             _build_excel_bytes(analysis),
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "sdc_analysis.xlsx",
+            filename,
         )
 
     if fmt_key in {"png", "svg"}:
@@ -343,8 +354,10 @@ def export_job_artifact(job_result: dict, fmt: str) -> tuple[bytes, str, str]:
         fig.savefig(buffer, format=fmt_key, dpi=250, bbox_inches="tight")
         plt.close(fig)
 
+        ts1_token = _sanitize_filename_token(ts1_label, "ts1")
+        ts2_token = _sanitize_filename_token(ts2_label, "ts2")
         media = "image/png" if fmt_key == "png" else "image/svg+xml"
-        filename = f"sdc_analysis.{fmt_key}"
+        filename = f"sdc_{ts1_token}_{ts2_token}_{analysis.fragment_size}.{fmt_key}"
         return buffer.getvalue(), media, filename
 
     raise ValueError(f"Unsupported download format: {fmt}")

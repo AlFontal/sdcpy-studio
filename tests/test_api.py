@@ -101,6 +101,17 @@ def test_load_oni_example_dataset():
     assert "temp_anomaly_sa" in payload["numeric_columns"]
 
 
+def test_load_oni_example_dataset_csv():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.get("/api/v1/examples/oni-dataset.csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert 'filename="oni_temp_sa.csv"' in response.headers["content-disposition"]
+    assert response.text.startswith("date,oni_anomaly,temp_anomaly_sa")
+
+
 def test_submit_json_job_and_fetch_result():
     app = create_app(job_manager=InlineJobManager())
     client = TestClient(app)
@@ -255,11 +266,13 @@ def test_download_endpoints():
         xlsx.headers["content-type"]
         == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+    assert 'filename="sdc_ts1_ts2_12.xlsx"' in xlsx.headers["content-disposition"]
     assert len(xlsx.content) > 0
 
     png = client.get(f"/api/v1/jobs/{job_id}/download/png")
     assert png.status_code == 200
     assert png.headers["content-type"] == "image/png"
+    assert 'filename="sdc_ts1_ts2_12.png"' in png.headers["content-disposition"]
     assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
 
     bad = client.get(f"/api/v1/jobs/{job_id}/download/nope")

@@ -110,7 +110,13 @@ test("oni sample can be loaded without uploading a file", async ({ page }) => {
   await page.goto("/");
 
   await page.getByTestId("load-oni-example-button").click();
-  await expect(page.getByTestId("dataset-meta")).toContainText("oni_temp_sa.csv", { timeout: 20_000 });
+  await expect(page.getByTestId("dataset-meta")).toContainText("300 rows x 3 columns", {
+    timeout: 20_000,
+  });
+  await expect(page.getByTestId("dataset-meta")).not.toContainText("oni_temp_sa.csv");
+  await expect
+    .poll(async () => page.locator('input[type="file"][data-testid="dataset-file-input"]').inputValue())
+    .toContain("oni_temp_sa.csv");
   await expect(page.getByTestId("dataset-date-select")).toHaveValue("date");
   await expect(page.getByTestId("dataset-ts1-select")).toHaveValue("oni_anomaly");
   await expect(page.getByTestId("dataset-ts2-select")).toHaveValue("temp_anomaly_sa");
