@@ -81,14 +81,14 @@ class SDCMapJobRequest(BaseModel):
     alpha: float = Field(0.05, gt=0.0, lt=1.0)
     top_fraction: float = Field(0.25, gt=0.0, le=1.0)
 
-    time_start: str = "2010-01-01"
-    time_end: str = "2023-12-01"
-    peak_date: str = "2015-01-01"
+    time_start: str | None = None
+    time_end: str | None = None
+    peak_date: str | None = None
 
-    lat_min: float = 20
-    lat_max: float = 70
-    lon_min: float = -160
-    lon_max: float = -60
+    lat_min: float | None = None
+    lat_max: float | None = None
+    lon_min: float | None = None
+    lon_max: float | None = None
     lat_stride: int = Field(1, ge=1, le=8)
     lon_stride: int = Field(1, ge=1, le=8)
 
@@ -96,10 +96,19 @@ class SDCMapJobRequest(BaseModel):
     def _check_consistency(self) -> SDCMapJobRequest:
         if self.min_lag > self.max_lag:
             raise ValueError("`min_lag` must be <= `max_lag`.")
-        if self.lat_min >= self.lat_max:
-            raise ValueError("`lat_min` must be < `lat_max`.")
-        if self.lon_min >= self.lon_max:
-            raise ValueError("`lon_min` must be < `lon_max`.")
+        bounds = (self.lat_min, self.lat_max, self.lon_min, self.lon_max)
+        provided_bounds = [value is not None for value in bounds]
+        if any(provided_bounds) and not all(provided_bounds):
+            raise ValueError(
+                "`lat_min`, `lat_max`, `lon_min`, and `lon_max` must be provided together, or all omitted."
+            )
+        if all(provided_bounds):
+            if float(self.lat_min) >= float(self.lat_max):
+                raise ValueError("`lat_min` must be < `lat_max`.")
+            if float(self.lon_min) >= float(self.lon_max):
+                raise ValueError("`lon_min` must be < `lon_max`.")
+        if self.time_start and self.time_end and self.time_start > self.time_end:
+            raise ValueError("`time_start` must be <= `time_end`.")
         return self
 
 

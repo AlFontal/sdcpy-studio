@@ -59,9 +59,15 @@ const mapMaxLagInput = document.getElementById("map_max_lag");
 const mapTimeStartInput = document.getElementById("map_time_start");
 const mapTimeEndInput = document.getElementById("map_time_end");
 const mapPeakDateInput = document.getElementById("map_peak_date");
+const mapLatMinInput = document.getElementById("map_lat_min");
+const mapLatMaxInput = document.getElementById("map_lat_max");
+const mapLonMinInput = document.getElementById("map_lon_min");
+const mapLonMaxInput = document.getElementById("map_lon_max");
+const mapClearBoundsButton = document.getElementById("map_clear_bounds");
 const mapLoadButton = document.getElementById("map_load");
 const mapRunButton = document.getElementById("map_run");
 const mapStatusText = document.getElementById("map_status");
+const mapBoundsNotice = document.getElementById("map_bounds_notice");
 const mapProgressLabel = document.getElementById("map_progress_label");
 const mapProgressValue = document.getElementById("map_progress_value");
 const mapProgressTrack = document.getElementById("map_progress_track");
@@ -77,6 +83,9 @@ const mapSelectedCellText = document.getElementById("map_selected_cell");
 const mapSummary = document.getElementById("sdc_map_summary");
 const mapDownloadPngButton = document.getElementById("map_download_png");
 const mapDownloadNcButton = document.getElementById("map_download_nc");
+const mapDatasetDocsContent = document.getElementById("map_dataset_docs_content");
+const mapDriverDatasetMeta = document.getElementById("map_driver_dataset_meta");
+const mapFieldDatasetMeta = document.getElementById("map_field_dataset_meta");
 
 let activePoll = null;
 let latestResult = null;
@@ -107,8 +116,10 @@ let mapSelectedCell = null;
 let mapActiveTab = 0;
 let mapCellSeriesCache = new Map();
 let mapDownloadsEnabled = false;
+let mapBoundsShapeSync = false;
 let heatmapStepManuallyOverridden = false;
 let latestValidatedSeriesLength = 0;
+let mapDatasetCatalog = null;
 
 const RD_BU_WHITE_CENTER = [
   [0.0, "#053061"],
@@ -468,7 +479,170 @@ function setWorkflowTab(mode) {
   }
 }
 
+function parseOptionalNumberInput(inputEl) {
+  if (!inputEl) {
+    return null;
+  }
+  const raw = String(inputEl.value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getMapBoundsSelection() {
+  const latMin = parseOptionalNumberInput(mapLatMinInput);
+  const latMax = parseOptionalNumberInput(mapLatMaxInput);
+  const lonMin = parseOptionalNumberInput(mapLonMinInput);
+  const lonMax = parseOptionalNumberInput(mapLonMaxInput);
+  const values = [latMin, latMax, lonMin, lonMax];
+  const definedCount = values.filter((value) => value !== null).length;
+
+  if (definedCount === 0) {
+    return { hasBounds: false, lat_min: null, lat_max: null, lon_min: null, lon_max: null };
+  }
+  if (definedCount !== 4) {
+    throw new Error("Provide all four bounds (lat/lon min+max), or clear them all to run full map.");
+  }
+  if (latMin >= latMax) {
+    throw new Error("Latitude bounds must satisfy lat min < lat max.");
+  }
+  if (lonMin >= lonMax) {
+    throw new Error("Longitude bounds must satisfy lon min < lon max.");
+  }
+  return { hasBounds: true, lat_min: latMin, lat_max: latMax, lon_min: lonMin, lon_max: lonMax };
+}
+
+function updateMapBoundsNotice() {
+  if (!mapBoundsNotice) {
+    return;
+  }
+  try {
+    const bounds = getMapBoundsSelection();
+    if (!bounds.hasBounds) {
+      mapBoundsNotice.textContent =
+        "No bounds selected: full map will be computed. Draw a rectangle on the map (modebar) or fill bounds manually.";
+      return;
+    }
+    mapBoundsNotice.textContent =
+      `Selected bounds: lat [${bounds.lat_min.toFixed(2)}, ${bounds.lat_max.toFixed(2)}], ` +
+      `lon [${bounds.lon_min.toFixed(2)}, ${bounds.lon_max.toFixed(2)}].`;
+  } catch (error) {
+    mapBoundsNotice.textContent = String(error);
+  }
+}
+
+function setMapBoundsInputs(bounds) {
+  if (!mapLatMinInput || !mapLatMaxInput || !mapLonMinInput || !mapLonMaxInput) {
+    return;
+  }
+  mapLatMinInput.value = bounds?.lat_min != null ? String(bounds.lat_min) : "";
+  mapLatMaxInput.value = bounds?.lat_max != null ? String(bounds.lat_max) : "";
+  mapLonMinInput.value = bounds?.lon_min != null ? String(bounds.lon_min) : "";
+  mapLonMaxInput.value = bounds?.lon_max != null ? String(bounds.lon_max) : "";
+  updateMapBoundsNotice();
+}
+
+function createMapBoundsShape(bounds) {
+  if (!bounds) {
+    return null;
+  }
+  return {
+    type: "rect",
+    xref: "x",
+    yref: "y",
+    editable: true,
+    x0: bounds.lon_min,
+    x1: bounds.lon_max,
+    y0: bounds.lat_min,
+    y1: bounds.lat_max,
+    line: { color: "#f97316", width: 2, dash: "dash" },
+    fillcolor: "rgba(249,115,22,0.06)",
+  };
+}
+
+function normalizeBoundsObject(candidate) {
+  if (!candidate) {
+    return null;
+  }
+  const x0 = Number(candidate.x0);
+  const x1 = Number(candidate.x1);
+  const y0 = Number(candidate.y0);
+  const y1 = Number(candidate.y1);
+  if (![x0, x1, y0, y1].every((value) => Number.isFinite(value))) {
+    return null;
+  }
+  const lonMin = Math.min(x0, x1);
+  const lonMax = Math.max(x0, x1);
+  const latMin = Math.min(y0, y1);
+  const latMax = Math.max(y0, y1);
+  if (!(lonMin < lonMax) || !(latMin < latMax)) {
+    return null;
+  }
+  return {
+    hasBounds: true,
+    lat_min: latMin,
+    lat_max: latMax,
+    lon_min: lonMin,
+    lon_max: lonMax,
+  };
+}
+
+function parseBoundsFromRelayout(eventData, currentLayout = null) {
+  if (!eventData) {
+    return undefined;
+  }
+  if (Array.isArray(eventData.shapes)) {
+    if (!eventData.shapes.length) {
+      return null;
+    }
+    const lastShape = eventData.shapes[eventData.shapes.length - 1];
+    return normalizeBoundsObject(lastShape);
+  }
+
+  const shapeUpdates = new Map();
+  const pattern = /^shapes\[(\d+)\]\.(x0|x1|y0|y1)$/;
+  Object.entries(eventData).forEach(([key, value]) => {
+    const match = key.match(pattern);
+    if (!match) {
+      return;
+    }
+    const idx = Number(match[1]);
+    if (!shapeUpdates.has(idx)) {
+      shapeUpdates.set(idx, {});
+    }
+    shapeUpdates.get(idx)[match[2]] = value;
+  });
+  if (shapeUpdates.size) {
+    const indexes = [...shapeUpdates.keys()].sort((a, b) => a - b);
+    const idx = indexes[indexes.length - 1];
+    const existing = currentLayout?.shapes?.[idx] || {};
+    return normalizeBoundsObject({ ...existing, ...shapeUpdates.get(idx) });
+  }
+  return undefined;
+}
+
+async function syncExploreBoundsShape(bounds) {
+  if (!window.Plotly || !mapPlot || mapPhase !== "explore") {
+    return;
+  }
+  const shape = createMapBoundsShape(bounds);
+  mapBoundsShapeSync = true;
+  try {
+    await Plotly.relayout(mapPlot, { shapes: shape ? [shape] : [] });
+  } finally {
+    mapBoundsShapeSync = false;
+  }
+}
+
+function parseOptionalDateInput(inputEl) {
+  const raw = String(inputEl?.value ?? "").trim();
+  return raw || null;
+}
+
 function getMapConfig() {
+  const bounds = getMapBoundsSelection();
   return {
     driver_dataset: mapDriverDatasetInput?.value || "pdo",
     field_dataset: mapFieldDatasetInput?.value || "ncep_air",
@@ -478,17 +652,160 @@ function getMapConfig() {
     n_permutations: Math.max(1, Math.round(Number(mapPermutationsInput?.value) || 49)),
     min_lag: Math.round(Number(mapMinLagInput?.value) || -6),
     max_lag: Math.round(Number(mapMaxLagInput?.value) || 6),
-    time_start: mapTimeStartInput?.value || "2010-01-01",
-    time_end: mapTimeEndInput?.value || "2023-12-01",
-    peak_date: mapPeakDateInput?.value || "2015-01-01",
+    time_start: parseOptionalDateInput(mapTimeStartInput),
+    time_end: parseOptionalDateInput(mapTimeEndInput),
+    peak_date: parseOptionalDateInput(mapPeakDateInput),
     two_tailed: false,
-    lat_min: 20,
-    lat_max: 70,
-    lon_min: -160,
-    lon_max: -60,
+    lat_min: bounds.lat_min,
+    lat_max: bounds.lat_max,
+    lon_min: bounds.lon_min,
+    lon_max: bounds.lon_max,
     lat_stride: 1,
     lon_stride: 1,
   };
+}
+
+function formatMetadataDateRange(start, end) {
+  const s = String(start || "").trim();
+  const e = String(end || "").trim();
+  if (!s || !e) {
+    return "coverage unavailable";
+  }
+  return `${s} to ${e}`;
+}
+
+function formatBoundsSnippet(item) {
+  const latMin = Number(item?.lat_min);
+  const latMax = Number(item?.lat_max);
+  const lonMin = Number(item?.lon_min);
+  const lonMax = Number(item?.lon_max);
+  if (![latMin, latMax, lonMin, lonMax].every((value) => Number.isFinite(value))) {
+    return "";
+  }
+  return `Domain: lat [${latMin.toFixed(1)}, ${latMax.toFixed(1)}], lon [${lonMin.toFixed(
+    1
+  )}, ${lonMax.toFixed(1)}].`;
+}
+
+function getSelectedMapDatasets() {
+  if (!mapDatasetCatalog) {
+    return { driver: null, field: null };
+  }
+  const driverKey = mapDriverDatasetInput?.value || "";
+  const fieldKey = mapFieldDatasetInput?.value || "";
+  const driver = (mapDatasetCatalog.drivers || []).find((item) => item.key === driverKey) || null;
+  const field = (mapDatasetCatalog.fields || []).find((item) => item.key === fieldKey) || null;
+  return { driver, field };
+}
+
+function renderMapSelectorOptions() {
+  if (!mapDatasetCatalog) {
+    return;
+  }
+  if (mapDriverDatasetInput) {
+    const byKey = new Map((mapDatasetCatalog.drivers || []).map((item) => [item.key, item]));
+    Array.from(mapDriverDatasetInput.options).forEach((option) => {
+      const entry = byKey.get(option.value);
+      if (!entry) {
+        return;
+      }
+      option.textContent = `${entry.key} (${formatMetadataDateRange(entry.time_start, entry.time_end)})`;
+      option.title = entry.description || entry.key;
+    });
+  }
+  if (mapFieldDatasetInput) {
+    const byKey = new Map((mapDatasetCatalog.fields || []).map((item) => [item.key, item]));
+    Array.from(mapFieldDatasetInput.options).forEach((option) => {
+      const entry = byKey.get(option.value);
+      if (!entry) {
+        return;
+      }
+      const variableSuffix = entry.variable ? ` · ${entry.variable}` : "";
+      option.textContent =
+        `${entry.key}${variableSuffix} (${formatMetadataDateRange(entry.time_start, entry.time_end)})`;
+      option.title = entry.description || entry.key;
+    });
+  }
+}
+
+function renderMapSelectorMetadata() {
+  const { driver, field } = getSelectedMapDatasets();
+  if (mapDriverDatasetMeta) {
+    if (!driver) {
+      mapDriverDatasetMeta.textContent = "Select a driver dataset.";
+    } else {
+      const description = driver.description || "No description available.";
+      const coverage = formatMetadataDateRange(driver.time_start, driver.time_end);
+      mapDriverDatasetMeta.textContent = `${description} Coverage: ${coverage}.`;
+    }
+  }
+  if (mapFieldDatasetMeta) {
+    if (!field) {
+      mapFieldDatasetMeta.textContent = "Select a field dataset.";
+    } else {
+      const description = field.description || "No description available.";
+      const coverage = formatMetadataDateRange(field.time_start, field.time_end);
+      const variable = field.variable ? `Variable: ${field.variable}. ` : "";
+      const bounds = formatBoundsSnippet(field);
+      mapFieldDatasetMeta.textContent = `${variable}${description} Coverage: ${coverage}. ${bounds}`.trim();
+    }
+  }
+}
+
+function renderMapDatasetDocs() {
+  if (!mapDatasetDocsContent) {
+    return;
+  }
+  if (!mapDatasetCatalog) {
+    mapDatasetDocsContent.textContent = "Dataset descriptions unavailable in this environment.";
+    return;
+  }
+  const { driver, field } = getSelectedMapDatasets();
+  const driverKey = mapDriverDatasetInput?.value || "";
+  const fieldKey = mapFieldDatasetInput?.value || "";
+  const driverText = driver?.description || "No driver description available.";
+  const fieldText = field?.description || "No field description available.";
+  const variableSuffix = field?.variable ? ` (variable: ${field.variable})` : "";
+  const driverCoverage = formatMetadataDateRange(driver?.time_start, driver?.time_end);
+  const fieldCoverage = formatMetadataDateRange(field?.time_start, field?.time_end);
+  const domainText = formatBoundsSnippet(field);
+  mapDatasetDocsContent.innerHTML =
+    `<p><strong>Driver (${driverKey})</strong>: ${driverText}<br><span class="hint">Coverage: ${driverCoverage}</span></p>` +
+    `<p><strong>Field (${fieldKey})</strong>${variableSuffix}: ${fieldText}<br><span class="hint">Coverage: ${fieldCoverage}${domainText ? ` · ${domainText}` : ""}</span></p>`;
+}
+
+async function fetchMapCatalog() {
+  try {
+    const response = await fetch("/api/v1/sdc-map/catalog");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to fetch map dataset catalog.");
+    }
+    mapDatasetCatalog = data;
+  } catch (_error) {
+    mapDatasetCatalog = null;
+  }
+  renderMapSelectorOptions();
+  renderMapSelectorMetadata();
+  renderMapDatasetDocs();
+}
+
+async function applyMapDriverDefaults(driverKey) {
+  const key = driverKey || mapDriverDatasetInput?.value || "pdo";
+  const response = await fetch(`/api/v1/sdc-map/defaults?driver_dataset=${encodeURIComponent(key)}`);
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || "Unable to compute driver defaults.");
+  }
+  if (mapPeakDateInput) {
+    mapPeakDateInput.value = data.peak_date || "";
+  }
+  if (mapTimeStartInput) {
+    mapTimeStartInput.value = data.time_start || "";
+  }
+  if (mapTimeEndInput) {
+    mapTimeEndInput.value = data.time_end || "";
+  }
 }
 
 function updateProgress(progress, status) {
@@ -2016,6 +2333,9 @@ function renderMapSummary(summary, runtimeSeconds = null) {
   const keys = [
     ["driver_dataset", "Driver"],
     ["field_dataset", "Field"],
+    ["peak_date", "Peak date"],
+    ["time_start", "Time start"],
+    ["time_end", "Time end"],
     ["fragment_size", "Fragment"],
     ["alpha", "Alpha"],
     ["top_fraction", "Top fraction"],
@@ -2024,18 +2344,21 @@ function renderMapSummary(summary, runtimeSeconds = null) {
     ["n_lon", "Lon points"],
     ["valid_cells", "Valid cells"],
     ["valid_values", "Valid values"],
+    ["full_bounds_selected", "Full bounds"],
     ["mean_abs_corr", "Mean |corr|"],
   ];
   const items = keys
     .filter(([key]) => Object.prototype.hasOwnProperty.call(summary, key))
     .map(([key, label]) => {
       const value = summary[key];
-      const pretty =
-        typeof value === "number"
-          ? value.toFixed(4).replace(/\.0000$/, "")
-          : value === null || value === undefined
-            ? "NA"
-            : String(value);
+      let pretty;
+      if (typeof value === "boolean") {
+        pretty = value ? "yes" : "no";
+      } else if (typeof value === "number") {
+        pretty = value.toFixed(4).replace(/\.0000$/, "");
+      } else {
+        pretty = value === null || value === undefined ? "NA" : String(value);
+      }
       return `<div class="stat"><span class="stat-label">${label}</span><span class="stat-value">${pretty}</span></div>`;
     });
   if (typeof runtimeSeconds === "number" && Number.isFinite(runtimeSeconds)) {
@@ -2168,6 +2491,15 @@ async function renderMapExploration(explore) {
     Number.isFinite(fieldLonMin) && Number.isFinite(fieldLonMax)
       ? [fieldLonMin - lonPadding, fieldLonMax + lonPadding]
       : [lonFallbackMin, lonFallbackMax];
+  let selectedBounds = null;
+  try {
+    const bounds = getMapBoundsSelection();
+    if (bounds.hasBounds) {
+      selectedBounds = bounds;
+    }
+  } catch (_error) {
+    selectedBounds = null;
+  }
   const mapDomainX = [0, 1];
   const seriesDomainX = [0, 1];
   const mapDomainY = [0.56, 1];
@@ -2301,12 +2633,24 @@ async function renderMapExploration(explore) {
         font: { size: 12, color: "#111827" },
       },
     ],
+    dragmode: "drawrect",
+    newshape: {
+      line: { color: "#f97316", width: 2, dash: "dash" },
+      fillcolor: "rgba(249,115,22,0.06)",
+      layer: "above",
+    },
+    shapes: selectedBounds ? [createMapBoundsShape(selectedBounds)] : [],
   };
 
-  await Plotly.newPlot(mapPlot, traces, layout, { responsive: true, displaylogo: false });
+  await Plotly.newPlot(mapPlot, traces, layout, {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToAdd: ["drawrect", "eraseshape"],
+  });
   mapPlot.dataset.resultMapInitialized = "0";
   if (typeof mapPlot.removeAllListeners === "function") {
     mapPlot.removeAllListeners("plotly_click");
+    mapPlot.removeAllListeners("plotly_relayout");
   }
   mapPlot.on("plotly_click", (event) => {
     const point = event?.points?.[0];
@@ -2325,6 +2669,23 @@ async function renderMapExploration(explore) {
     const nextSeries = getCellSeries(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
     Plotly.restyle(mapPlot, { y: [nextSeries] }, [3]);
     setSelectedCellSummary(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+  });
+  mapPlot.on("plotly_relayout", async (eventData) => {
+    if (mapBoundsShapeSync || mapPhase !== "explore") {
+      return;
+    }
+    const nextBounds = parseBoundsFromRelayout(eventData, mapPlot.layout);
+    if (nextBounds === undefined) {
+      return;
+    }
+    if (nextBounds === null) {
+      setMapBoundsInputs(null);
+      invalidateMapPreparation();
+      return;
+    }
+    setMapBoundsInputs(nextBounds);
+    invalidateMapPreparation();
+    await syncExploreBoundsShape(nextBounds);
   });
 
   if (mapTimeSlider) {
@@ -2559,23 +2920,41 @@ async function submitMapExplore() {
     etaText: "Preparing exploration view...",
   });
   try {
+    const config = getMapConfig();
     const response = await fetch("/api/v1/sdc-map/explore", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(getMapConfig()),
+      body: JSON.stringify(config),
     });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.detail || "Unable to load map exploration.");
     }
     latestMapExplore = data.result;
+    if (mapPeakDateInput) {
+      mapPeakDateInput.value = latestMapExplore?.summary?.peak_date || mapPeakDateInput.value;
+    }
+    if (mapTimeStartInput) {
+      mapTimeStartInput.value = latestMapExplore?.summary?.time_start || mapTimeStartInput.value;
+    }
+    if (mapTimeEndInput) {
+      mapTimeEndInput.value = latestMapExplore?.summary?.time_end || mapTimeEndInput.value;
+    }
+    if (latestMapExplore?.summary?.full_bounds_selected) {
+      setMapBoundsInputs(null);
+    }
     mapCellSeriesCache = new Map();
     mapSelectedCell = pickInitialCell(latestMapExplore);
     mapSelectedTimeIndex = Math.floor((latestMapExplore.time_index?.length || 1) / 2);
     setMapPhase("explore");
     await renderMapExploration(latestMapExplore);
     renderMapSummary(latestMapExplore.summary, null);
-    setMapStatus("Exploration ready. Move the date slider and click grid cells.");
+    const fullBounds = Boolean(latestMapExplore?.summary?.full_bounds_selected);
+    setMapStatus(
+      fullBounds
+        ? "Exploration ready. No bounds selected: full map run will be expensive. Draw bounds on the map to constrain it."
+        : "Exploration ready. Move the date slider, click grid cells, and run SDC map."
+    );
     setMapProgress({
       percent: 100,
       label: "Exploration ready",
@@ -2639,7 +3018,7 @@ async function pollMapJob(jobId) {
       setMapStatus(String(error), true);
       setMapRunBusy(false);
     }
-  }, 1400);
+  }, 700);
 }
 
 async function submitMapJob() {
@@ -2650,10 +3029,11 @@ async function submitMapJob() {
     throw new Error("Load and explore driver + dataset first.");
   }
   setWorkflowTab("map");
+  const config = getMapConfig();
   const response = await fetch("/api/v1/jobs/sdc-map", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(getMapConfig()),
+    body: JSON.stringify(config),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -2663,13 +3043,23 @@ async function submitMapJob() {
   await pollMapJob(data.job_id);
 }
 
-function invalidateMapPreparation() {
-  latestMapExplore = null;
+function invalidateMapPreparation({ hard = false } = {}) {
+  if (hard) {
+    latestMapExplore = null;
+  }
   refreshMapRunButtonState();
   if (mapPhase === "explore") {
-    setMapStatus("Map settings changed. Reload driver + dataset to refresh exploration.");
+    setMapStatus(
+      hard
+        ? "Map settings changed. Reload driver + dataset to refresh exploration."
+        : "Map settings updated. You can run SDC map with current settings."
+    );
   } else if (mapPhase === "results") {
-    setMapStatus("Map settings changed. Reload driver + dataset before running again.");
+    setMapStatus(
+      hard
+        ? "Map settings changed. Reload driver + dataset before running again."
+        : "Map settings updated. Run SDC map again to refresh results."
+    );
   }
 }
 
@@ -2872,9 +3262,34 @@ function attachHandlers() {
     });
   }
 
+  if (mapClearBoundsButton) {
+    mapClearBoundsButton.addEventListener("click", async () => {
+      setMapBoundsInputs(null);
+      invalidateMapPreparation();
+      await syncExploreBoundsShape(null);
+    });
+  }
+  if (mapDriverDatasetInput) {
+    mapDriverDatasetInput.addEventListener("change", async () => {
+      try {
+        await applyMapDriverDefaults(mapDriverDatasetInput.value);
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+  if (mapFieldDatasetInput) {
+    mapFieldDatasetInput.addEventListener("change", () => {
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+
   const mapConfigInputs = [
-    mapDriverDatasetInput,
-    mapFieldDatasetInput,
     mapFragmentSizeInput,
     mapAlphaInput,
     mapTopFractionInput,
@@ -2884,9 +3299,22 @@ function attachHandlers() {
     mapTimeStartInput,
     mapTimeEndInput,
     mapPeakDateInput,
+    mapLatMinInput,
+    mapLatMaxInput,
+    mapLonMinInput,
+    mapLonMaxInput,
   ].filter(Boolean);
   mapConfigInputs.forEach((input) => {
-    input.addEventListener("change", invalidateMapPreparation);
+    input.addEventListener("change", async () => {
+      updateMapBoundsNotice();
+      invalidateMapPreparation();
+      try {
+        const bounds = getMapBoundsSelection();
+        await syncExploreBoundsShape(bounds.hasBounds ? bounds : null);
+      } catch (_error) {
+        // Keep invalid intermediate states local to form validation.
+      }
+    });
   });
 
   window.addEventListener("resize", () => {
@@ -2924,4 +3352,15 @@ setMapStatus("Load datasets to start exploration, then run SDC map.");
 if (mapSelectedCellText) {
   mapSelectedCellText.textContent = "Selected grid cell: none.";
 }
+updateMapBoundsNotice();
 attachHandlers();
+
+void (async () => {
+  await fetchMapCatalog();
+  try {
+    await applyMapDriverDefaults(mapDriverDatasetInput?.value || "pdo");
+  } catch (error) {
+    setMapStatus(String(error), true);
+  }
+  updateMapBoundsNotice();
+})();

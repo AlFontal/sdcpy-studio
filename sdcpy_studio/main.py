@@ -31,6 +31,8 @@ from sdcpy_studio.service import (
     build_synthetic_example,
     export_job_artifact,
     export_sdc_map_artifact,
+    get_sdc_map_catalog,
+    get_sdc_map_driver_defaults,
     inspect_dataset_csv,
     parse_series_csv,
 )
@@ -214,6 +216,20 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return SDCMapExploreResponse(status="ready", result=result)
+
+    @app.get("/api/v1/sdc-map/catalog")
+    async def sdc_map_catalog() -> dict:
+        try:
+            return get_sdc_map_catalog()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/v1/sdc-map/defaults")
+    async def sdc_map_defaults(driver_dataset: str = "pdo") -> dict:
+        try:
+            return get_sdc_map_driver_defaults(driver_dataset)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/api/v1/jobs/{job_id}", response_model=JobStatusResponse)
     async def get_job_status(job_id: str) -> JobStatusResponse:
