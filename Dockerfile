@@ -3,8 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-ARG INSTALL_MAP_DEPS=0
-ARG GITHUB_TOKEN=""
+ARG INSTALL_MAP_DEPS=1
 
 WORKDIR /app
 
@@ -17,15 +16,7 @@ COPY sdcpy_studio /app/sdcpy_studio
 
 RUN pip install --no-cache-dir --upgrade pip \
     && if [ "$INSTALL_MAP_DEPS" = "1" ]; then \
-        if [ -n "$GITHUB_TOKEN" ]; then \
-          git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"; \
-        fi; \
-        pip install --no-cache-dir ".[map]" || { \
-          rm -f /root/.gitconfig; \
-          echo "Map dependency install failed. If sdcpy-map is private, build with --build-arg GITHUB_TOKEN=<token>."; \
-          exit 1; \
-        }; \
-        rm -f /root/.gitconfig; \
+        pip install --no-cache-dir ".[map]"; \
       else \
         pip install --no-cache-dir .; \
       fi

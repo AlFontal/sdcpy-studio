@@ -64,7 +64,7 @@ Open `http://127.0.0.1:8000`.
 
 ## Docker
 
-Default image build (works without map private dependency access):
+Default image build (includes SDC Map dependencies):
 
 ```bash
 docker build -t sdcpy-studio .
@@ -83,18 +83,17 @@ docker run -d \
 
 Image includes a healthcheck on `/health`.
 
-To enable SDC Map dependencies at build time:
+To build a lighter image without map dependencies:
 
 ```bash
 docker build -t sdcpy-studio-map \
-  --build-arg INSTALL_MAP_DEPS=1 \
-  --build-arg GITHUB_TOKEN=<your_github_token> \
+  --build-arg INSTALL_MAP_DEPS=0 \
   .
 ```
 
 Notes:
-- `sdcpy-map` is installed from GitHub in the `map` extra; private-repo access requires `GITHUB_TOKEN` while the repo is private.
-- Default build sets `INSTALL_MAP_DEPS=0` so deployment does not fail in environments without GitHub credentials.
+- `sdcpy-map` is installed from the public GitHub repo in the `map` extra.
+- Default build sets `INSTALL_MAP_DEPS=1`, so SDC Map is available out of the box.
 - With `INSTALL_MAP_DEPS=0`, the app still runs but the SDC Map tab returns a dependency error until map deps are installed.
 - You can prewarm the runtime dataset cache with `npm run cache:map` (or run it inside the container).
 
