@@ -38,6 +38,8 @@ To enable the SDC Map workflow locally:
 uv sync --extra dev --extra map
 ```
 
+`sdcpy-map` is public, so no GitHub token or private index setup is required.
+
 Prewarm local map datasets cache (recommended before testing map workflows):
 
 ```bash
@@ -64,7 +66,7 @@ Open `http://127.0.0.1:8000`.
 
 ## Docker
 
-Default image build (includes SDC Map dependencies):
+Default image build (includes SDC Map dependencies and uses `uv` in-container):
 
 ```bash
 docker build -t sdcpy-studio .
@@ -83,6 +85,46 @@ docker run -d \
 
 Image includes a healthcheck on `/health`.
 
+### Docker Compose (recommended)
+
+The repository includes `docker-compose.yml` with:
+- `sdcpy-studio` web service on host port `8050`
+- persistent named volume `sdcpy_map_cache` for map datasets
+- optional `cache-map` tool service to prewarm datasets
+
+Start/upgrade the app:
+
+```bash
+docker compose up -d --build
+```
+
+Open: `http://127.0.0.1:8050`
+
+Prewarm map cache via compose:
+
+```bash
+docker compose --profile tools run --rm cache-map
+```
+
+Prewarm a single heavy field dataset only:
+
+```bash
+docker compose --profile tools run --rm cache-map \
+  python /app/scripts/prewarm-map-cache.py --field-key ersstv5_sst
+```
+
+Stop services:
+
+```bash
+docker compose down
+```
+
+Stop services and remove cached datasets:
+
+```bash
+docker compose down -v
+```
+
 To build a lighter image without map dependencies:
 
 ```bash
@@ -93,9 +135,10 @@ docker build -t sdcpy-studio-map \
 
 Notes:
 - `sdcpy-map` is installed from the public GitHub repo in the `map` extra.
+- Container dependency installation is performed with `uv sync --frozen`.
 - Default build sets `INSTALL_MAP_DEPS=1`, so SDC Map is available out of the box.
 - With `INSTALL_MAP_DEPS=0`, the app still runs but the SDC Map tab returns a dependency error until map deps are installed.
-- You can prewarm the runtime dataset cache with `npm run cache:map` (or run it inside the container).
+- You can prewarm the runtime dataset cache with `npm run cache:map` (or use the compose `cache-map` service).
 
 ## API Endpoints
 
