@@ -65,7 +65,32 @@
     </section>
 
     <section class="layout">
-      <article class="card span-12" data-testid="dataset-workflow-card">
+      <article class="card span-12 workflow-tabs-card" data-testid="workflow-tabs-card">
+        <div class="mode-switch workflow-switch" role="tablist" aria-label="Workflow tabs">
+          <button
+            id="workflow_tab_sdc"
+            class="mode-btn is-active"
+            role="tab"
+            type="button"
+            aria-selected="true"
+            aria-controls="workflow_sdc"
+          >
+            2-Way SDC
+          </button>
+          <button
+            id="workflow_tab_map"
+            class="mode-btn"
+            role="tab"
+            type="button"
+            aria-selected="false"
+            aria-controls="workflow_map"
+          >
+            SDC Map (beta)
+          </button>
+        </div>
+      </article>
+
+      <article class="card span-12 workflow-sdc" data-testid="dataset-workflow-card">
         <details id="input_workflow_details" data-testid="input-workflow-details" class="settings-details" open>
           <summary>Input Workflow</summary>
           <p class="hint">
@@ -159,7 +184,7 @@
         </details>
       </article>
 
-      <article class="card span-12" data-testid="analysis-settings-card">
+      <article class="card span-12 workflow-sdc" data-testid="analysis-settings-card">
         <details id="analysis_settings_details" data-testid="analysis-settings-details" class="settings-details" data-locked="true">
           <summary>Analysis Settings</summary>
           <div class="form-grid">
@@ -198,15 +223,15 @@
         </div>
       </article>
 
-      <article class="card span-12 status-banner hidden" id="status_card" data-testid="status-card">
+      <article class="card span-12 status-banner hidden workflow-sdc" id="status_card" data-testid="status-card">
         <p id="status_text" data-testid="status-text"></p>
         <p id="status_error" class="error"></p>
       </article>
 
-      <article class="card span-12" data-testid="explorer-card">
+      <article class="card span-12 workflow-sdc" data-testid="explorer-card">
         <details id="explorer_details" data-testid="explorer-details" class="settings-details">
           <summary>2-Way SDC Explorer</summary>
-          <div class="explorer-shell">
+          <div class="explorer-shell" id="workflow_sdc" role="tabpanel">
             <aside class="explorer-controls">
               <div class="plot-controls">
                 <label class="range-field">Significance alpha
@@ -274,10 +299,121 @@
         </details>
       </article>
 
-      <article class="card span-12" id="summary_card" data-testid="summary-card">
+      <article class="card span-12 workflow-sdc" id="summary_card" data-testid="summary-card">
         <h2>Summary</h2>
         <div id="summary_stats" data-testid="summary-stats" class="summary-grid"></div>
         <ul id="summary_notes" class="notes"></ul>
+      </article>
+
+      <article class="card span-12 workflow-map" data-testid="map-workflow-card" hidden>
+        <details id="map_details" class="settings-details" open>
+          <summary>SDC Map Explorer (beta)</summary>
+          <p class="hint">
+            Dedicated sdcpy-map workflow. Jobs are expensive; progress and ETA are shown while computing.
+          </p>
+          <div class="explorer-shell" id="workflow_map" role="tabpanel">
+            <aside class="explorer-controls">
+              <div class="plot-controls">
+                <div class="map-controls-grid">
+                  <label>Driver dataset
+                    <select id="map_driver_dataset">
+                      <option value="pdo">pdo</option>
+                      <option value="nao">nao</option>
+                      <option value="nino34">nino34</option>
+                    </select>
+                  </label>
+                  <label>Field dataset
+                    <select id="map_field_dataset">
+                      <option value="ncep_air">ncep_air</option>
+                      <option value="ersstv5_sst">ersstv5_sst</option>
+                      <option value="oisst_v2_sst">oisst_v2_sst</option>
+                    </select>
+                  </label>
+                  <label>Fragment size
+                    <input id="map_fragment_size" type="number" min="2" value="12" />
+                  </label>
+                  <label>Significance alpha
+                    <input id="map_alpha" type="number" min="0.001" max="0.999" step="0.001" value="0.05" />
+                  </label>
+                  <label>Top fraction
+                    <input id="map_top_fraction" type="number" min="0.01" max="1" step="0.01" value="0.25" />
+                  </label>
+                  <label>Permutations
+                    <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
+                  </label>
+                  <label>Min lag
+                    <input id="map_min_lag" type="number" value="-6" />
+                  </label>
+                  <label>Max lag
+                    <input id="map_max_lag" type="number" value="6" />
+                  </label>
+                  <label>Time start
+                    <input id="map_time_start" type="date" value="2010-01-01" />
+                  </label>
+                  <label>Time end
+                    <input id="map_time_end" type="date" value="2023-12-01" />
+                  </label>
+                  <label>Peak date
+                    <input id="map_peak_date" type="date" value="2015-01-01" />
+                  </label>
+                </div>
+                <div class="map-action-row">
+                  <button id="map_load" class="btn secondary" type="button">Load driver + dataset</button>
+                  <button id="map_run" class="btn" type="button" disabled>Run SDC map</button>
+                </div>
+                <section class="map-progress" aria-label="Map job progress">
+                  <div class="map-progress-meta">
+                    <span id="map_progress_label">Idle</span>
+                    <span id="map_progress_value">0%</span>
+                  </div>
+                  <div
+                    id="map_progress_track"
+                    class="map-progress-track"
+                    role="progressbar"
+                    aria-label="SDC map progress"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                  >
+                    <span id="map_progress_fill" class="map-progress-fill"></span>
+                  </div>
+                  <p id="map_progress_eta" class="hint map-progress-eta">Expected runtime: up to a few minutes.</p>
+                </section>
+                <p id="map_status" class="hint plot-controls-hint">
+                  Load datasets to start the exploration phase.
+                </p>
+              </div>
+            </aside>
+            <div class="explorer-stage map-stage">
+              <div id="map_phase_badge" class="map-phase-badge">Phase: idle</div>
+              <div id="map_explore_controls" class="map-explore-controls" hidden>
+                <label>Date frame
+                  <input id="map_time_slider" type="range" min="0" max="0" step="1" value="0" />
+                </label>
+                <output id="map_time_slider_label">-</output>
+              </div>
+              <div id="map_result_tabs" class="map-result-tabs" role="tablist" aria-label="SDC map layers" hidden></div>
+              <div class="map-results-shell">
+                <div id="sdc_map_plot" class="plot map-plot" data-testid="sdc-map-plot"></div>
+                <section class="explorer-downloads map-downloads-side" aria-label="map-downloads">
+                  <h3>Download</h3>
+                  <div class="download-grid map-download-grid">
+                    <button id="map_download_png" class="download-tile" type="button" disabled>
+                      <span class="download-ext">.png</span>
+                      <span class="download-label">Matplotlib figure (4 layers)</span>
+                    </button>
+                    <button id="map_download_nc" class="download-tile" type="button" disabled>
+                      <span class="download-ext">.nc</span>
+                      <span class="download-label">Layer fields (NetCDF)</span>
+                    </button>
+                  </div>
+                </section>
+              </div>
+              <p id="map_selected_cell" class="hint map-selected-cell"></p>
+              <div id="sdc_map_summary" class="summary-grid summary-grid-map"></div>
+            </div>
+          </div>
+        </details>
       </article>
 
     </section>

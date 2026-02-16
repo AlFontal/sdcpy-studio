@@ -72,6 +72,42 @@ class SDCJobFromDatasetRequest(BaseModel):
     max_memory_gb: float = Field(1.0, ge=0.1, le=16.0)
 
 
+class SDCMapJobRequest(BaseModel):
+    """Request body for launching a beta SDC map computation job."""
+
+    driver_dataset: Literal["pdo", "nao", "nino34"] = "pdo"
+    field_dataset: Literal["ncep_air", "ersstv5_sst", "oisst_v2_sst"] = "ncep_air"
+
+    fragment_size: int = Field(12, ge=2, le=256)
+    n_permutations: int = Field(49, ge=1, le=999)
+    two_tailed: bool = False
+    min_lag: int = -6
+    max_lag: int = 6
+    alpha: float = Field(0.05, gt=0.0, lt=1.0)
+    top_fraction: float = Field(0.25, gt=0.0, le=1.0)
+
+    time_start: str = "2010-01-01"
+    time_end: str = "2023-12-01"
+    peak_date: str = "2015-01-01"
+
+    lat_min: float = 20
+    lat_max: float = 70
+    lon_min: float = -160
+    lon_max: float = -60
+    lat_stride: int = Field(1, ge=1, le=8)
+    lon_stride: int = Field(1, ge=1, le=8)
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> SDCMapJobRequest:
+        if self.min_lag > self.max_lag:
+            raise ValueError("`min_lag` must be <= `max_lag`.")
+        if self.lat_min >= self.lat_max:
+            raise ValueError("`lat_min` must be < `lat_max`.")
+        if self.lon_min >= self.lon_max:
+            raise ValueError("`lon_min` must be < `lon_max`.")
+        return self
+
+
 class JobSubmissionResponse(BaseModel):
     """Response returned immediately after creating a job."""
 
@@ -142,9 +178,47 @@ class JobResultPayload(BaseModel):
     runtime_seconds: float
 
 
+class SDCMapJobResultPayload(BaseModel):
+    """Result payload returned for completed SDC map jobs."""
+
+    summary: dict
+    notes: list[str]
+    runtime_seconds: float
+    figure_png_base64: str
+    layer_maps: dict | None = None
+    download_formats: list[str]
+
+
+class SDCMapExploreResultPayload(BaseModel):
+    """Payload returned by the pre-run map exploration endpoint."""
+
+    summary: dict
+    time_index: list[str]
+    driver_values: list[float | None]
+    lat: list[float]
+    lon: list[float]
+    field_frames: list[list[list[float | None]]]
+    coastline: dict[str, list[float | None]]
+
+
+class SDCMapExploreResponse(BaseModel):
+    """Top-level exploration response."""
+
+    status: Literal["ready"]
+    result: SDCMapExploreResultPayload
+
+
 class JobResultResponse(BaseModel):
     """Top-level completed job response."""
 
     job_id: str
     status: Literal["succeeded"]
     result: JobResultPayload
+
+
+class SDCMapJobResultResponse(BaseModel):
+    """Top-level completed map-job response."""
+
+    job_id: str
+    status: Literal["succeeded"]
+    result: SDCMapJobResultPayload

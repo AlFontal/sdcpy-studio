@@ -21,11 +21,16 @@ from sdcpy_studio.schemas import (
     JobSubmissionResponse,
     SDCJobFromDatasetRequest,
     SDCJobRequest,
+    SDCMapExploreResponse,
+    SDCMapJobRequest,
+    SDCMapJobResultResponse,
 )
 from sdcpy_studio.service import (
     build_job_request_from_dataset,
+    build_sdc_map_exploration,
     build_synthetic_example,
     export_job_artifact,
+    export_sdc_map_artifact,
     inspect_dataset_csv,
     parse_series_csv,
 )
@@ -193,6 +198,23 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             message="Dataset job submitted. Poll /api/v1/jobs/{job_id} for completion.",
         )
 
+    @app.post("/api/v1/jobs/sdc-map", response_model=JobSubmissionResponse)
+    async def submit_sdc_map_job(payload: SDCMapJobRequest) -> JobSubmissionResponse:
+        job = app.state.job_manager.submit_map(payload)
+        return JobSubmissionResponse(
+            job_id=job.job_id,
+            status=job.status,
+            message="Map job submitted. Poll /api/v1/jobs/sdc-map/{job_id} for completion.",
+        )
+
+    @app.post("/api/v1/sdc-map/explore", response_model=SDCMapExploreResponse)
+    async def explore_sdc_map(payload: SDCMapJobRequest) -> SDCMapExploreResponse:
+        try:
+            result = build_sdc_map_exploration(payload.model_dump(mode="python"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return SDCMapExploreResponse(status="ready", result=result)
+
     @app.get("/api/v1/jobs/{job_id}", response_model=JobStatusResponse)
     async def get_job_status(job_id: str) -> JobStatusResponse:
         job = app.state.job_manager.get(job_id)
@@ -212,6 +234,25 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
         return JobResultResponse(job_id=job_id, status="succeeded", result=job.result)
 
+    @app.get("/api/v1/jobs/sdc-map/{job_id}", response_model=JobStatusResponse)
+    async def get_map_job_status(job_id: str) -> JobStatusResponse:
+        job = app.state.job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return _job_status_payload(job)
+
+    @app.get("/api/v1/jobs/sdc-map/{job_id}/result", response_model=SDCMapJobResultResponse)
+    async def get_map_job_result(job_id: str) -> SDCMapJobResultResponse:
+        job = app.state.job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "failed":
+            raise HTTPException(status_code=422, detail=job.error or "Job failed.")
+        if job.status != "succeeded" or job.result is None:
+            raise HTTPException(status_code=409, detail="Job still running.")
+
+        return SDCMapJobResultResponse(job_id=job_id, status="succeeded", result=job.result)
+
     @app.get("/api/v1/jobs/{job_id}/download/{fmt}")
     async def download_result(job_id: str, fmt: str) -> Response:
         job = app.state.job_manager.get(job_id)
@@ -224,6 +265,27 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
         try:
             payload, media_type, filename = export_job_artifact(job.result, fmt)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename=\"{filename}\"'},
+        )
+
+    @app.get("/api/v1/jobs/sdc-map/{job_id}/download/{fmt}")
+    async def download_map_result(job_id: str, fmt: str) -> Response:
+        job = app.state.job_manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "failed":
+            raise HTTPException(status_code=422, detail=job.error or "Job failed.")
+        if job.status != "succeeded" or job.result is None:
+            raise HTTPException(status_code=409, detail="Job still running.")
+
+        try:
+            payload, media_type, filename = export_sdc_map_artifact(job.result, fmt)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

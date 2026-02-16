@@ -5,6 +5,7 @@
   "scripts": {
     "dev:api": "uv run uvicorn sdcpy_studio.main:create_app --factory --host 127.0.0.1 --port 8000",
     "dev:api:reload": "uv run uvicorn sdcpy_studio.main:create_app --factory --host 127.0.0.1 --port 8000 --reload",
+    "cache:map": "uv run python ./scripts/prewarm-map-cache.py",
     "test:e2e": "playwright test",
     "test:e2e:with-api": "node ./scripts/run-e2e-with-api.mjs"
   },

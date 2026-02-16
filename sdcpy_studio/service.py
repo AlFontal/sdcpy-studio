@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import re
 from collections.abc import Callable
+from pathlib import Path
+from threading import Lock
 from time import perf_counter
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -14,9 +18,45 @@ import sdcpy.core as sdc_core
 from sdcpy import compute_sdc
 from sdcpy.scale_dependent_correlation import SDCAnalysis
 
-from sdcpy_studio.schemas import SDCJobFromDatasetRequest, SDCJobRequest
+from sdcpy_studio.schemas import SDCJobFromDatasetRequest, SDCJobRequest, SDCMapJobRequest
 
 MAX_STRONGEST_LINKS = 100
+_MAP_DATA_PATH_CACHE: dict[tuple[str, str, str], dict[str, Path]] = {}
+_MAP_DATA_PATH_CACHE_LOCK = Lock()
+_RD_BU_WHITE_CENTER: tuple[tuple[float, str], ...] = (
+    (0.0, "#053061"),
+    (0.125, "#2166ac"),
+    (0.25, "#4393c3"),
+    (0.375, "#92c5de"),
+    (0.5, "#ffffff"),
+    (0.625, "#f4a582"),
+    (0.75, "#d6604d"),
+    (0.875, "#b2182b"),
+    (1.0, "#67001f"),
+)
+_MAP_LAYER_DEFS: tuple[dict[str, object], ...] = (
+    {
+        "key": "corr_mean",
+        "label": "Mean extreme correlation",
+        "colorscale": [[stop, color] for stop, color in _RD_BU_WHITE_CENTER],
+        "zmin": -1.0,
+        "zmax": 1.0,
+    },
+    {
+        "key": "lag_mean",
+        "label": "Mean lag (months)",
+        "colorscale": "RdYlBu",
+        "zmin": None,
+        "zmax": None,
+    },
+    {
+        "key": "driver_rel_time_mean",
+        "label": "Mean driver-relative time (months)",
+        "colorscale": "BrBG",
+        "zmin": None,
+        "zmax": None,
+    },
+)
 
 
 def _sanitize_filename_token(value: str, fallback: str) -> str:
@@ -361,6 +401,594 @@ def export_job_artifact(job_result: dict, fmt: str) -> tuple[bytes, str, str]:
         return buffer.getvalue(), media, filename
 
     raise ValueError(f"Unsupported download format: {fmt}")
+
+
+def export_sdc_map_artifact(job_result: dict, fmt: str) -> tuple[bytes, str, str]:
+    """Build downloadable output bytes from a finished SDC map job result."""
+    artifacts = job_result.get("_artifacts_map")
+    if not artifacts:
+        raise ValueError("Download artifact metadata is unavailable for this map job.")
+
+    driver_token = _sanitize_filename_token(artifacts.get("driver_dataset", "driver"), "driver")
+    field_token = _sanitize_filename_token(artifacts.get("field_dataset", "field"), "field")
+    fragment_size = int(artifacts.get("fragment_size", 0))
+    basename = f"sdcmap_{driver_token}_{field_token}_{fragment_size}"
+
+    fmt_key = fmt.lower().strip()
+    if fmt_key == "png":
+        return artifacts["png"], "image/png", f"{basename}.png"
+    if fmt_key == "nc":
+        return artifacts["nc"], "application/x-netcdf", f"{basename}.nc"
+    raise ValueError(f"Unsupported download format: {fmt}")
+
+
+def _canonical_psl_download_url(url: str) -> str:
+    """Normalize NOAA PSL fileServer links to downloads host for stability."""
+    prefix = "https://psl.noaa.gov/thredds/fileServer/"
+    if url.startswith(prefix):
+        return f"https://downloads.psl.noaa.gov/{url[len(prefix):]}"
+    return url
+
+
+def _map_asset_filename(kind: str, key: str, url: str) -> str:
+    """Build unique filenames to avoid collisions (e.g., multiple sst.mnmean.nc files)."""
+    name = Path(urlparse(url).path).name or "dataset.bin"
+    safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", key.strip()) if key else "asset"
+    safe_kind = re.sub(r"[^A-Za-z0-9_.-]+", "_", kind.strip()) if kind else "asset"
+    return f"{safe_kind}_{safe_key}_{name}"
+
+
+def _serialize_optional_array(values: np.ndarray) -> list[float | None]:
+    arr = np.asarray(values, dtype=float)
+    return [float(v) if np.isfinite(v) else None for v in arr.tolist()]
+
+
+def _serialize_optional_matrix(values: np.ndarray) -> list[list[float | None]]:
+    arr = np.asarray(values, dtype=float)
+    matrix: list[list[float | None]] = []
+    for row in arr:
+        matrix.append([float(v) if np.isfinite(v) else None for v in row.tolist()])
+    return matrix
+
+
+def _serialize_optional_cube(values: np.ndarray) -> list[list[list[float | None]]]:
+    arr = np.asarray(values, dtype=float)
+    cube: list[list[list[float | None]]] = []
+    for frame in arr:
+        cube.append(_serialize_optional_matrix(frame))
+    return cube
+
+
+def _build_map_netcdf_bytes(
+    layers: dict[str, np.ndarray],
+    lats: np.ndarray,
+    lons: np.ndarray,
+    attrs: dict[str, str | int | float],
+) -> bytes:
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        raise ValueError(
+            "Could not serialize map arrays as NetCDF because xarray is unavailable."
+        ) from exc
+
+    dataset = xr.Dataset(
+        data_vars={
+            key: (("lat", "lon"), np.asarray(values, dtype=float)) for key, values in layers.items()
+        },
+        coords={
+            "lat": np.asarray(lats, dtype=float),
+            "lon": np.asarray(lons, dtype=float),
+        },
+        attrs=dict(attrs),
+    )
+
+    for engine in ("h5netcdf", "netcdf4", "scipy", None):
+        try:
+            if engine is None:
+                payload = dataset.to_netcdf()
+            else:
+                payload = dataset.to_netcdf(engine=engine)
+            if isinstance(payload, bytes):
+                return payload
+            if isinstance(payload, memoryview):
+                return payload.tobytes()
+            return bytes(payload)
+        except Exception:
+            continue
+
+    raise ValueError(
+        "Could not serialize map arrays as NetCDF. Install one NetCDF backend (h5netcdf, netCDF4, or scipy)."
+    )
+
+
+def _iter_coastline_coords(geometry) -> list[list[tuple[float, float]]]:
+    if geometry is None or getattr(geometry, "is_empty", True):
+        return []
+
+    geom_type = getattr(geometry, "geom_type", "")
+    if geom_type in {"LineString", "LinearRing"}:
+        coords = list(getattr(geometry, "coords", []))
+        if not coords:
+            return []
+        return [[(float(x), float(y)) for x, y, *_ in coords]]
+    if geom_type == "Polygon":
+        exterior = getattr(geometry, "exterior", None)
+        if exterior is None:
+            return []
+        coords = list(getattr(exterior, "coords", []))
+        if not coords:
+            return []
+        return [[(float(x), float(y)) for x, y, *_ in coords]]
+    geoms = getattr(geometry, "geoms", None)
+    if geoms is None:
+        return []
+
+    out: list[list[tuple[float, float]]] = []
+    for part in geoms:
+        out.extend(_iter_coastline_coords(part))
+    return out
+
+
+def _serialize_coastline_trace(coastline) -> dict[str, list[float | None]]:
+    lon_values: list[float | None] = []
+    lat_values: list[float | None] = []
+    for geom in getattr(coastline, "geometry", []):
+        for coords in _iter_coastline_coords(geom):
+            if not coords:
+                continue
+            for lon, lat in coords:
+                lon_values.append(float(lon))
+                lat_values.append(float(lat))
+            lon_values.append(None)
+            lat_values.append(None)
+    if lon_values and lon_values[-1] is None:
+        lon_values.pop()
+        lat_values.pop()
+    return {"lon": lon_values, "lat": lat_values}
+
+
+def _build_map_layer_payload(
+    layers: dict[str, np.ndarray],
+    lats: np.ndarray,
+    lons: np.ndarray,
+    coastline,
+) -> dict:
+    payload_layers: list[dict] = []
+    for spec in _MAP_LAYER_DEFS:
+        key = str(spec["key"])
+        if key not in layers:
+            continue
+        payload_layers.append(
+            {
+                "key": key,
+                "label": spec["label"],
+                "colorscale": spec["colorscale"],
+                "zmin": spec["zmin"],
+                "zmax": spec["zmax"],
+                "values": _serialize_optional_matrix(np.asarray(layers[key], dtype=float)),
+            }
+        )
+    return {
+        "lat": [float(v) for v in np.asarray(lats, dtype=float).tolist()],
+        "lon": [float(v) for v in np.asarray(lons, dtype=float).tolist()],
+        "coastline": _serialize_coastline_trace(coastline),
+        "layers": payload_layers,
+    }
+
+
+def fetch_sdc_map_assets(
+    data_dir: Path | str,
+    driver_key: str,
+    field_key: str,
+    include_coastline: bool = True,
+    progress_hook: Callable[[int, int, str], None] | None = None,
+    progress_start: int = 0,
+    progress_total: int = 1,
+) -> dict[str, Path]:
+    """Fetch map assets using collision-safe filenames and stable source URLs."""
+    try:
+        from sdcpy_map.datasets import (
+            COASTLINE_URL,
+            DRIVER_DATASETS,
+            FIELD_DATASETS,
+            download_if_missing,
+        )
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    if driver_key not in DRIVER_DATASETS:
+        supported = ", ".join(sorted(DRIVER_DATASETS))
+        raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
+    if field_key not in FIELD_DATASETS:
+        supported = ", ".join(sorted(FIELD_DATASETS))
+        raise ValueError(f"Unknown field dataset '{field_key}'. Supported: {supported}.")
+
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    driver_spec = DRIVER_DATASETS[driver_key]
+    field_spec = FIELD_DATASETS[field_key]
+
+    driver_url = _canonical_psl_download_url(driver_spec.url)
+    field_url = _canonical_psl_download_url(field_spec.url)
+    coastline_url = _canonical_psl_download_url(COASTLINE_URL)
+
+    out: dict[str, Path] = {}
+    _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})")
+    out["driver"] = download_if_missing(
+        driver_url,
+        data_dir / _map_asset_filename("driver", driver_key, driver_url),
+    )
+    _emit_progress(progress_hook, progress_start + 1, progress_total, f"Ensuring field dataset ({field_key})")
+    out["field"] = download_if_missing(
+        field_url,
+        data_dir / _map_asset_filename("field", field_key, field_url),
+    )
+    if include_coastline:
+        _emit_progress(progress_hook, progress_start + 2, progress_total, "Ensuring coastline dataset")
+        out["coastline"] = download_if_missing(
+            coastline_url,
+            data_dir / _map_asset_filename("coastline", "ne_110m", coastline_url),
+        )
+
+    return out
+
+
+def build_sdc_map_exploration(payload: dict) -> dict:
+    """Load map datasets and return exploration-ready arrays for interactive UI."""
+    request = SDCMapJobRequest.model_validate(payload)
+    try:
+        from sdcpy_map import (
+            SDCMapConfig,
+            align_driver_to_field,
+            grid_coordinates,
+            load_coastline,
+            load_driver_series,
+            load_field_anomaly_subset,
+        )
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    config = SDCMapConfig(
+        fragment_size=request.fragment_size,
+        n_permutations=request.n_permutations,
+        two_tailed=request.two_tailed,
+        min_lag=request.min_lag,
+        max_lag=request.max_lag,
+        alpha=request.alpha,
+        top_fraction=request.top_fraction,
+        peak_date=request.peak_date,
+        time_start=request.time_start,
+        time_end=request.time_end,
+        lat_min=request.lat_min,
+        lat_max=request.lat_max,
+        lon_min=request.lon_min,
+        lon_max=request.lon_max,
+        lat_stride=request.lat_stride,
+        lon_stride=request.lon_stride,
+    )
+
+    data_dir = Path(
+        os.getenv(
+            "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
+            str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
+        )
+    )
+    cache_key = (
+        str(data_dir.resolve()),
+        request.driver_dataset,
+        request.field_dataset,
+    )
+    with _MAP_DATA_PATH_CACHE_LOCK:
+        cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
+    if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
+        paths = cached_paths
+    else:
+        paths = fetch_sdc_map_assets(
+            data_dir=data_dir,
+            driver_key=request.driver_dataset,
+            field_key=request.field_dataset,
+        )
+        with _MAP_DATA_PATH_CACHE_LOCK:
+            _MAP_DATA_PATH_CACHE[cache_key] = paths
+
+    driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    driver = align_driver_to_field(driver, mapped_field)
+    coastline = load_coastline(paths["coastline"])
+    lats, lons = grid_coordinates(mapped_field)
+
+    time_index = pd.to_datetime(mapped_field["time"].values)
+    field_values = np.asarray(mapped_field.values, dtype=float)
+    driver_values = driver.to_numpy(dtype=float)
+
+    finite_mask = np.isfinite(field_values)
+    valid_count = int(finite_mask.sum())
+    total_count = int(field_values.size)
+    first_valid_idx: list[int] | None = None
+    field_lat_min: float | None = None
+    field_lat_max: float | None = None
+    field_lon_min: float | None = None
+    field_lon_max: float | None = None
+    field_value_min: float | None = None
+    field_value_max: float | None = None
+    if valid_count > 0:
+        first_valid_idx = list(np.argwhere(finite_mask)[0].tolist())
+        valid_cell_mask = np.any(finite_mask, axis=0)
+        valid_cell_coords = np.argwhere(valid_cell_mask)
+        if valid_cell_coords.size:
+            lat_idx = valid_cell_coords[:, 0]
+            lon_idx = valid_cell_coords[:, 1]
+            lat_values = np.asarray(lats, dtype=float)[lat_idx]
+            lon_values = np.asarray(lons, dtype=float)[lon_idx]
+            field_lat_min = float(np.nanmin(lat_values))
+            field_lat_max = float(np.nanmax(lat_values))
+            field_lon_min = float(np.nanmin(lon_values))
+            field_lon_max = float(np.nanmax(lon_values))
+
+        finite_values = field_values[finite_mask]
+        if finite_values.size:
+            field_value_min = float(np.nanmin(finite_values))
+            field_value_max = float(np.nanmax(finite_values))
+
+    return {
+        "summary": {
+            "driver_dataset": request.driver_dataset,
+            "field_dataset": request.field_dataset,
+            "time_start": request.time_start,
+            "time_end": request.time_end,
+            "n_time": int(mapped_field.sizes.get("time", 0)),
+            "n_lat": int(mapped_field.sizes.get("lat", 0)),
+            "n_lon": int(mapped_field.sizes.get("lon", 0)),
+            "valid_values": valid_count,
+            "valid_rate": float(valid_count / total_count) if total_count else 0.0,
+            "first_valid_index": first_valid_idx,
+            "field_lat_min": field_lat_min,
+            "field_lat_max": field_lat_max,
+            "field_lon_min": field_lon_min,
+            "field_lon_max": field_lon_max,
+            "field_value_min": field_value_min,
+            "field_value_max": field_value_max,
+        },
+        "time_index": [ts.strftime("%Y-%m-%d") for ts in time_index],
+        "driver_values": _serialize_optional_array(driver_values),
+        "lat": [float(v) for v in np.asarray(lats, dtype=float).tolist()],
+        "lon": [float(v) for v in np.asarray(lons, dtype=float).tolist()],
+        "field_frames": _serialize_optional_cube(field_values),
+        "coastline": _serialize_coastline_trace(coastline),
+    }
+
+
+def run_sdc_map_job(
+    payload: dict,
+    progress_hook: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """Run a beta SDC map job and return a compact JSON-friendly payload."""
+    request = SDCMapJobRequest.model_validate(payload)
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+    except Exception:
+        # Keep job execution resilient if backend selection is unavailable.
+        pass
+
+    try:
+        from sdcpy_map import (
+            SDCMapConfig,
+            align_driver_to_field,
+            compute_sdcmap_layers,
+            grid_coordinates,
+            load_coastline,
+            load_driver_series,
+            load_field_anomaly_subset,
+            plot_layer_maps_compact,
+        )
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    total_steps = 8
+    _emit_progress(progress_hook, 0, total_steps, "Preparing SDC map inputs")
+    config = SDCMapConfig(
+        fragment_size=request.fragment_size,
+        n_permutations=request.n_permutations,
+        two_tailed=request.two_tailed,
+        min_lag=request.min_lag,
+        max_lag=request.max_lag,
+        alpha=request.alpha,
+        top_fraction=request.top_fraction,
+        peak_date=request.peak_date,
+        time_start=request.time_start,
+        time_end=request.time_end,
+        lat_min=request.lat_min,
+        lat_max=request.lat_max,
+        lon_min=request.lon_min,
+        lon_max=request.lon_max,
+        lat_stride=request.lat_stride,
+        lon_stride=request.lon_stride,
+    )
+
+    data_dir = Path(
+        os.getenv(
+            "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
+            str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
+        )
+    )
+
+    started = perf_counter()
+    _emit_progress(progress_hook, 1, total_steps, f"Ensuring driver dataset ({request.driver_dataset})")
+    cache_key = (
+        str(data_dir.resolve()),
+        request.driver_dataset,
+        request.field_dataset,
+    )
+    with _MAP_DATA_PATH_CACHE_LOCK:
+        cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
+
+    if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
+        _emit_progress(
+            progress_hook,
+            1,
+            total_steps,
+            f"Using in-memory driver cache ({request.driver_dataset})",
+        )
+        _emit_progress(
+            progress_hook,
+            2,
+            total_steps,
+            f"Using in-memory field cache ({request.field_dataset})",
+        )
+        _emit_progress(progress_hook, 3, total_steps, "Using in-memory coastline cache")
+        paths = cached_paths
+    else:
+        paths = fetch_sdc_map_assets(
+            data_dir=data_dir,
+            driver_key=request.driver_dataset,
+            field_key=request.field_dataset,
+            progress_hook=progress_hook,
+            progress_start=1,
+            progress_total=total_steps,
+        )
+        with _MAP_DATA_PATH_CACHE_LOCK:
+            _MAP_DATA_PATH_CACHE[cache_key] = paths
+
+    _emit_progress(progress_hook, 4, total_steps, "Loading and aligning series")
+    driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    driver = align_driver_to_field(driver, mapped_field)
+
+    _emit_progress(progress_hook, 5, total_steps, "Computing map layers")
+    layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
+    lats, lons = grid_coordinates(mapped_field)
+
+    _emit_progress(progress_hook, 6, total_steps, "Rendering map figure")
+    coastline = load_coastline(paths["coastline"])
+    fig, *_ = plot_layer_maps_compact(
+        layers=layers,
+        lats=lats,
+        lons=lons,
+        coastline=coastline,
+        title="",
+        return_handles=True,
+    )
+    png_buffer = io.BytesIO()
+    fig.savefig(png_buffer, format="png", dpi=180, bbox_inches="tight", pad_inches=0.02)
+    png_bytes = png_buffer.getvalue()
+
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.close(fig)
+    except Exception:
+        pass
+
+    _emit_progress(progress_hook, 7, total_steps, "Packing outputs")
+    nc_bytes = _build_map_netcdf_bytes(
+        layers=layers,
+        lats=lats,
+        lons=lons,
+        attrs={
+            "driver_dataset": request.driver_dataset,
+            "field_dataset": request.field_dataset,
+            "fragment_size": int(request.fragment_size),
+            "alpha": float(request.alpha),
+            "top_fraction": float(request.top_fraction),
+            "min_lag": int(request.min_lag),
+            "max_lag": int(request.max_lag),
+        },
+    )
+
+    runtime_seconds = perf_counter() - started
+    corr_mean = np.asarray(layers["corr_mean"], dtype=float)
+    dominant_sign = np.asarray(layers["dominant_sign"], dtype=float)
+    total_cells = int(corr_mean.size)
+    valid_cells = int(np.isfinite(corr_mean).sum())
+    field_lat_min: float | None = None
+    field_lat_max: float | None = None
+    field_lon_min: float | None = None
+    field_lon_max: float | None = None
+    finite_cell_coords = np.argwhere(np.isfinite(corr_mean))
+    if finite_cell_coords.size:
+        lat_idx = finite_cell_coords[:, 0]
+        lon_idx = finite_cell_coords[:, 1]
+        lat_values = np.asarray(lats, dtype=float)[lat_idx]
+        lon_values = np.asarray(lons, dtype=float)[lon_idx]
+        field_lat_min = float(np.nanmin(lat_values))
+        field_lat_max = float(np.nanmax(lat_values))
+        field_lon_min = float(np.nanmin(lon_values))
+        field_lon_max = float(np.nanmax(lon_values))
+    elif len(lats) and len(lons):
+        field_lat_min = float(np.nanmin(np.asarray(lats, dtype=float)))
+        field_lat_max = float(np.nanmax(np.asarray(lats, dtype=float)))
+        field_lon_min = float(np.nanmin(np.asarray(lons, dtype=float)))
+        field_lon_max = float(np.nanmax(np.asarray(lons, dtype=float)))
+
+    positive_cells = int(np.nansum(dominant_sign > 0))
+    negative_cells = int(np.nansum(dominant_sign < 0))
+    mean_abs_corr = (
+        float(np.nanmean(np.abs(corr_mean))) if np.isfinite(corr_mean).any() else None
+    )
+
+    notes: list[str] = []
+    if valid_cells == 0:
+        notes.append("No valid grid cells passed filtering with the current parameters.")
+    if request.n_permutations > 99:
+        notes.append("High permutation count selected; map runs may take substantially longer.")
+
+    _emit_progress(progress_hook, total_steps, total_steps, "Completed")
+    layer_maps = _build_map_layer_payload(layers=layers, lats=lats, lons=lons, coastline=coastline)
+    return {
+        "summary": {
+            "driver_dataset": request.driver_dataset,
+            "field_dataset": request.field_dataset,
+            "time_start": request.time_start,
+            "time_end": request.time_end,
+            "peak_date": request.peak_date,
+            "fragment_size": int(request.fragment_size),
+            "n_permutations": int(request.n_permutations),
+            "alpha": float(request.alpha),
+            "top_fraction": float(request.top_fraction),
+            "min_lag": int(request.min_lag),
+            "max_lag": int(request.max_lag),
+            "lat_min": float(request.lat_min),
+            "lat_max": float(request.lat_max),
+            "lon_min": float(request.lon_min),
+            "lon_max": float(request.lon_max),
+            "lat_stride": int(request.lat_stride),
+            "lon_stride": int(request.lon_stride),
+            "n_time": int(mapped_field.sizes.get("time", 0)),
+            "n_lat": int(mapped_field.sizes.get("lat", 0)),
+            "n_lon": int(mapped_field.sizes.get("lon", 0)),
+            "valid_cells": valid_cells,
+            "valid_cell_rate": float(valid_cells / total_cells) if total_cells else 0.0,
+            "field_lat_min": field_lat_min,
+            "field_lat_max": field_lat_max,
+            "field_lon_min": field_lon_min,
+            "field_lon_max": field_lon_max,
+            "positive_dominant_cells": positive_cells,
+            "negative_dominant_cells": negative_cells,
+            "mean_abs_corr": mean_abs_corr,
+        },
+        "notes": notes,
+        "runtime_seconds": float(runtime_seconds),
+        "figure_png_base64": base64.b64encode(png_bytes).decode("ascii"),
+        "layer_maps": layer_maps,
+        "download_formats": ["png", "nc"],
+        "_artifacts_map": {
+            "png": png_bytes,
+            "nc": nc_bytes,
+            "driver_dataset": request.driver_dataset,
+            "field_dataset": request.field_dataset,
+            "fragment_size": int(request.fragment_size),
+        },
+    }
 
 
 def run_sdc_job(

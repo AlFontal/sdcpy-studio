@@ -52,6 +52,41 @@ class InlineJobManager:
         self.jobs[job_id] = job
         return job
 
+    def submit_map(self, request):
+        job_id = uuid4().hex
+        now = datetime.now(timezone.utc)
+        job = type("Job", (), {})()
+        job.job_id = job_id
+        job.status = "succeeded"
+        job.created_at = now
+        job.started_at = now
+        job.completed_at = now
+        job.error = None
+        job.progress_current = 1
+        job.progress_total = 1
+        job.progress_description = "Completed"
+        job.result = {
+            "summary": {
+                "driver_dataset": request.driver_dataset,
+                "field_dataset": request.field_dataset,
+                "fragment_size": request.fragment_size,
+                "valid_cells": 12,
+            },
+            "notes": [],
+            "runtime_seconds": 0.12,
+            "figure_png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
+            "download_formats": ["png", "nc"],
+            "_artifacts_map": {
+                "png": b"\x89PNG\r\n\x1a\n",
+                "nc": b"CDF\x01",
+                "driver_dataset": request.driver_dataset,
+                "field_dataset": request.field_dataset,
+                "fragment_size": request.fragment_size,
+            },
+        }
+        self.jobs[job_id] = job
+        return job
+
     def get(self, job_id: str):
         return self.jobs.get(job_id)
 
@@ -84,7 +119,7 @@ def test_root_page_renders():
 
     response = client.get("/")
     assert response.status_code == 200
-    assert "Scale-Dependent Correlation" in response.text
+    assert "scale-dependent correlation" in response.text.lower()
 
 
 def test_load_oni_example_dataset():
@@ -277,3 +312,82 @@ def test_download_endpoints():
 
     bad = client.get(f"/api/v1/jobs/{job_id}/download/nope")
     assert bad.status_code == 400
+
+
+def test_map_job_endpoints():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    submit = client.post(
+        "/api/v1/jobs/sdc-map",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "fragment_size": 12,
+            "alpha": 0.05,
+            "top_fraction": 0.25,
+            "n_permutations": 49,
+            "min_lag": -6,
+            "max_lag": 6,
+            "time_start": "2010-01-01",
+            "time_end": "2012-12-01",
+            "peak_date": "2011-01-01",
+        },
+    )
+    assert submit.status_code == 200
+    job_id = submit.json()["job_id"]
+
+    status = client.get(f"/api/v1/jobs/sdc-map/{job_id}")
+    assert status.status_code == 200
+    assert status.json()["status"] == "succeeded"
+
+    result = client.get(f"/api/v1/jobs/sdc-map/{job_id}/result")
+    assert result.status_code == 200
+    payload = result.json()["result"]
+    assert payload["summary"]["driver_dataset"] == "pdo"
+    assert payload["download_formats"] == ["png", "nc"]
+
+    png = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png")
+    assert png.status_code == 200
+    assert png.headers["content-type"] == "image/png"
+    assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    nc = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/nc")
+    assert nc.status_code == 200
+    assert nc.headers["content-type"] == "application/x-netcdf"
+    assert nc.content[:3] == b"CDF"
+
+
+def test_map_explore_endpoint(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    def _fake_explore(_payload):
+        return {
+            "summary": {"driver_dataset": "pdo", "field_dataset": "ncep_air", "n_time": 3},
+            "time_index": ["2010-01-01", "2010-02-01", "2010-03-01"],
+            "driver_values": [0.1, 0.2, 0.3],
+            "lat": [10.0, 20.0],
+            "lon": [30.0, 40.0],
+            "field_frames": [
+                [[1.0, 2.0], [3.0, 4.0]],
+                [[1.1, 2.1], [3.1, 4.1]],
+                [[1.2, 2.2], [3.2, 4.2]],
+            ],
+            "coastline": {"lon": [30.0, 40.0, None], "lat": [10.0, 20.0, None]},
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_exploration", _fake_explore)
+    response = client.post(
+        "/api/v1/sdc-map/explore",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["result"]["summary"]["driver_dataset"] == "pdo"
+    assert len(payload["result"]["time_index"]) == 3
+    assert len(payload["result"]["field_frames"]) == 3

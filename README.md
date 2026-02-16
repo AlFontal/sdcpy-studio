@@ -32,6 +32,28 @@ cd sdcpy-studio
 uv sync --extra dev
 ```
 
+To enable the SDC Map workflow locally:
+
+```bash
+uv sync --extra dev --extra map
+```
+
+Prewarm local map datasets cache (recommended before testing map workflows):
+
+```bash
+npm run cache:map
+```
+
+If one large field file fails mid-download, retry only that dataset:
+
+```bash
+npm run cache:map -- --field-key ersstv5_sst
+```
+
+This downloads all offered map datasets into:
+- `SDCPY_STUDIO_SDCPY_MAP_DATA_DIR` (if set), or
+- `~/.cache/sdcpy-studio/sdcpy-map`
+
 ## Run Locally
 
 ```bash
@@ -39,6 +61,42 @@ npm run dev:api
 ```
 
 Open `http://127.0.0.1:8000`.
+
+## Docker
+
+Default image build (works without map private dependency access):
+
+```bash
+docker build -t sdcpy-studio .
+```
+
+Run on a Linux server:
+
+```bash
+docker run -d \
+  --name sdcpy-studio \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e SDCPY_STUDIO_MAX_WORKERS=2 \
+  sdcpy-studio
+```
+
+Image includes a healthcheck on `/health`.
+
+To enable SDC Map dependencies at build time:
+
+```bash
+docker build -t sdcpy-studio-map \
+  --build-arg INSTALL_MAP_DEPS=1 \
+  --build-arg GITHUB_TOKEN=<your_github_token> \
+  .
+```
+
+Notes:
+- `sdcpy-map` is installed from GitHub in the `map` extra; private-repo access requires `GITHUB_TOKEN` while the repo is private.
+- Default build sets `INSTALL_MAP_DEPS=0` so deployment does not fail in environments without GitHub credentials.
+- With `INSTALL_MAP_DEPS=0`, the app still runs but the SDC Map tab returns a dependency error until map deps are installed.
+- You can prewarm the runtime dataset cache with `npm run cache:map` (or run it inside the container).
 
 ## API Endpoints
 

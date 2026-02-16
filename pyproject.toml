@@ -28,6 +28,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+map = [
+  "sdcpy-map @ git+https://github.com/AlFontal/sdcpy-map.git@main",
+  "h5py>=3.10.0",
+]
 dev = [
   "pytest>=8.0",
   "ruff>=0.8.0",
@@ -53,6 +57,9 @@ include = [
   "sdcpy_studio/static/*.svg",
   "sdcpy_studio/data/*.csv",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100
