@@ -6,6 +6,27 @@ services:
       args:
         INSTALL_MAP_DEPS: "1"
     ports:
-      - "8000:8000"
+      - "8050:8000"
     environment:
       SDCPY_STUDIO_MAX_WORKERS: "2"
+      SDCPY_STUDIO_SDCPY_MAP_DATA_DIR: "/root/.cache/sdcpy-studio/sdcpy-map"
+    volumes:
+      - sdcpy_map_cache:/root/.cache/sdcpy-studio/sdcpy-map
+
+  cache-map:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_MAP_DEPS: "1"
+    profiles:
+      - tools
+    command: ["python", "/app/scripts/prewarm-map-cache.py"]
+    environment:
+      SDCPY_STUDIO_SDCPY_MAP_DATA_DIR: "/root/.cache/sdcpy-studio/sdcpy-map"
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - sdcpy_map_cache:/root/.cache/sdcpy-studio/sdcpy-map
+
+volumes:
+  sdcpy_map_cache:
