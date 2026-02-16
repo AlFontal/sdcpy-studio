@@ -391,3 +391,41 @@ def test_map_explore_endpoint(monkeypatch):
     assert payload["result"]["summary"]["driver_dataset"] == "pdo"
     assert len(payload["result"]["time_index"]) == 3
     assert len(payload["result"]["field_frames"]) == 3
+
+
+def test_map_catalog_endpoint(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        "sdcpy_studio.main.get_sdc_map_catalog",
+        lambda: {
+            "drivers": [{"key": "pdo", "description": "Pacific Decadal Oscillation"}],
+            "fields": [{"key": "ncep_air", "description": "NCEP air temperature", "variable": "air"}],
+        },
+    )
+    response = client.get("/api/v1/sdc-map/catalog")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["drivers"][0]["key"] == "pdo"
+    assert payload["fields"][0]["key"] == "ncep_air"
+
+
+def test_map_defaults_endpoint(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        "sdcpy_studio.main.get_sdc_map_driver_defaults",
+        lambda key: {
+            "driver_dataset": key,
+            "peak_date": "2015-01-01",
+            "time_start": "2012-01-01",
+            "time_end": "2018-01-01",
+        },
+    )
+    response = client.get("/api/v1/sdc-map/defaults?driver_dataset=pdo")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["driver_dataset"] == "pdo"
+    assert payload["peak_date"] == "2015-01-01"

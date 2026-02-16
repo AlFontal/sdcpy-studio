@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
@@ -26,6 +27,10 @@ _MAP_DATA_PATH_CACHE: dict[tuple[str, str, str], dict[str, Path]] = {}
 _MAP_DATA_PATH_CACHE_LOCK = Lock()
 _FIELD_BOUNDS_CACHE: dict[str, dict[str, float]] = {}
 _FIELD_BOUNDS_CACHE_LOCK = Lock()
+_DRIVER_COVERAGE_CACHE: dict[str, dict[str, object]] = {}
+_DRIVER_COVERAGE_CACHE_LOCK = Lock()
+_FIELD_COVERAGE_CACHE: dict[str, dict[str, object]] = {}
+_FIELD_COVERAGE_CACHE_LOCK = Lock()
 _RD_BU_WHITE_CENTER: tuple[tuple[float, str], ...] = (
     (0.0, "#053061"),
     (0.125, "#2166ac"),
@@ -75,6 +80,177 @@ def _read_bool_env(name: str, default: bool = False) -> bool:
         return bool(default)
     normalized = raw_value.strip().lower()
     return normalized in {"1", "true", "yes", "on"}
+
+
+def _resolve_map_cache_dir() -> Path:
+    return Path(
+        os.getenv(
+            "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
+            str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
+        )
+    )
+
+
+def _map_download_policy() -> tuple[bool, bool, bool]:
+    refresh = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_REFRESH", default=False)
+    verify_remote = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_VERIFY_REMOTE", default=False)
+    offline = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_OFFLINE", default=False)
+    if offline and refresh:
+        raise ValueError(
+            "Invalid cache policy: SDCPY_STUDIO_SDCPY_MAP_OFFLINE=1 cannot be combined with "
+            "SDCPY_STUDIO_SDCPY_MAP_REFRESH=1."
+        )
+    return refresh, verify_remote, offline
+
+
+def _download_map_asset(download_if_missing, url: str, destination: Path) -> Path:
+    refresh, verify_remote, offline = _map_download_policy()
+    kwargs = {
+        "refresh": refresh,
+        "verify_remote": verify_remote,
+        "offline": offline,
+    }
+    try:
+        return download_if_missing(url, destination, **kwargs)
+    except TypeError:
+        # Backward compatibility with older sdcpy-map versions.
+        if destination.exists() and destination.stat().st_size > 0 and not refresh and not verify_remote:
+            return destination
+        if refresh and destination.exists():
+            destination.unlink()
+        if offline and not destination.exists():
+            raise ValueError(
+                f"Offline mode is enabled and required dataset is missing: {destination.name}"
+            ) from None
+        return download_if_missing(url, destination)
+
+
+def _full_driver_config():
+    from sdcpy_map import SDCMapConfig
+
+    return SDCMapConfig(
+        # Keep timestamps within pandas ns-safe bounds.
+        time_start="1900-01-01",
+        time_end="2261-12-31",
+        lat_min=-90.0,
+        lat_max=90.0,
+        lon_min=-180.0,
+        lon_max=180.0,
+        lat_stride=1,
+        lon_stride=1,
+    )
+
+
+def _as_calendar_date(value: object) -> date | None:
+    """Parse common timestamp-like objects into a plain calendar date."""
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, np.datetime64):
+        return _as_calendar_date(np.datetime_as_string(value, unit="D"))
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        try:
+            return date(int(value.year), int(value.month), int(value.day))
+        except Exception:
+            return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    if " " in text:
+        text = text.split(" ", 1)[0]
+    if len(text) == 7 and text.count("-") == 1:
+        text = f"{text}-01"
+    elif len(text) == 4 and text.isdigit():
+        text = f"{text}-01-01"
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        match = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+        if not match:
+            return None
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return None
+
+
+def _shift_years(value: date, years: int) -> date:
+    year = int(value.year) + int(years)
+    month = int(value.month)
+    day = int(value.day)
+    if month == 2 and day == 29:
+        is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+        day = 29 if is_leap else 28
+    while True:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            day -= 1
+            if day < 1:
+                return date(year, month, 1)
+
+
+def _nearest_time_index(time_values: np.ndarray, target_date: str) -> int:
+    if time_values.size == 0:
+        return 0
+    target = _as_calendar_date(target_date)
+    if target is None:
+        return int(time_values.size // 2)
+
+    best_idx = 0
+    best_dist: int | None = None
+    for idx, raw in enumerate(time_values):
+        parsed = _as_calendar_date(raw)
+        if parsed is None:
+            continue
+        dist = abs((parsed - target).days)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_idx = idx
+    return int(best_idx)
+
+
+def _serialize_time_labels(time_values: np.ndarray) -> list[str]:
+    labels: list[str] = []
+    for raw in time_values:
+        parsed = _as_calendar_date(raw)
+        labels.append(parsed.isoformat() if parsed is not None else str(raw))
+    return labels
+
+
+def _derive_driver_peak_window(driver: pd.Series, years: int = 3) -> dict[str, object]:
+    clean = driver.dropna().sort_index()
+    if clean.empty:
+        raise ValueError("Driver dataset does not contain valid values.")
+
+    peak_date = _as_calendar_date(clean.idxmax())
+    parsed_index_dates = [_as_calendar_date(value) for value in clean.index]
+    valid_dates = [value for value in parsed_index_dates if value is not None]
+    if peak_date is None or not valid_dates:
+        raise ValueError("Driver dataset does not contain parseable datetime values.")
+
+    min_date = min(valid_dates)
+    max_date = max(valid_dates)
+    window_start = max(min_date, _shift_years(peak_date, -years))
+    window_end = min(max_date, _shift_years(peak_date, years))
+    if window_start >= window_end:
+        window_start = min_date
+        window_end = max_date
+
+    return {
+        "peak_date": peak_date.isoformat(),
+        "time_start": window_start.isoformat(),
+        "time_end": window_end.isoformat(),
+        "driver_min_date": min_date.isoformat(),
+        "driver_max_date": max_date.isoformat(),
+        "peak_value": float(clean.max()),
+    }
 
 
 def _emit_progress(
@@ -626,35 +802,9 @@ def fetch_sdc_map_assets(
     driver_url = _canonical_psl_download_url(driver_spec.url)
     field_url = _canonical_psl_download_url(field_spec.url)
     coastline_url = _canonical_psl_download_url(COASTLINE_URL)
-    refresh = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_REFRESH", default=False)
-    verify_remote = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_VERIFY_REMOTE", default=False)
-    offline = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_OFFLINE", default=False)
-
-    if offline and refresh:
-        raise ValueError(
-            "Invalid cache policy: SDCPY_STUDIO_SDCPY_MAP_OFFLINE=1 cannot be combined with "
-            "SDCPY_STUDIO_SDCPY_MAP_REFRESH=1."
-        )
 
     def _resolve_asset(url: str, destination: Path) -> Path:
-        kwargs = {
-            "refresh": refresh,
-            "verify_remote": verify_remote,
-            "offline": offline,
-        }
-        try:
-            return download_if_missing(url, destination, **kwargs)
-        except TypeError:
-            # Backward compatibility with older sdcpy-map versions.
-            if destination.exists() and destination.stat().st_size > 0 and not refresh and not verify_remote:
-                return destination
-            if refresh and destination.exists():
-                destination.unlink()
-            if offline and not destination.exists():
-                raise ValueError(
-                    f"Offline mode is enabled and required dataset is missing: {destination.name}"
-                ) from None
-            return download_if_missing(url, destination)
+        return _download_map_asset(download_if_missing, url, destination)
 
     out: dict[str, Path] = {}
     _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})")
@@ -677,6 +827,174 @@ def fetch_sdc_map_assets(
     return out
 
 
+def _get_driver_data_coverage(driver_key: str, data_dir: Path | str | None = None) -> dict[str, object]:
+    with _DRIVER_COVERAGE_CACHE_LOCK:
+        cached = _DRIVER_COVERAGE_CACHE.get(driver_key)
+    if cached is not None:
+        return cached
+
+    try:
+        from sdcpy_map import load_driver_series
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    if data_dir is None:
+        data_dir = _resolve_map_cache_dir()
+
+    paths = fetch_sdc_map_assets(
+        data_dir=data_dir,
+        driver_key=driver_key,
+        field_key="ncep_air",
+        include_coastline=False,
+    )
+    driver = load_driver_series(
+        paths["driver"],
+        config=_full_driver_config(),
+        driver_key=driver_key,
+    )
+    defaults = _derive_driver_peak_window(driver, years=3)
+    coverage = {
+        "time_start": defaults["driver_min_date"],
+        "time_end": defaults["driver_max_date"],
+        "n_points": int(len(driver)),
+        "peak_date": defaults["peak_date"],
+        "peak_value": defaults["peak_value"],
+    }
+    with _DRIVER_COVERAGE_CACHE_LOCK:
+        _DRIVER_COVERAGE_CACHE[driver_key] = coverage
+    return coverage
+
+
+def _get_field_data_coverage(field_key: str, data_dir: Path | str | None = None) -> dict[str, object]:
+    with _FIELD_COVERAGE_CACHE_LOCK:
+        cached = _FIELD_COVERAGE_CACHE.get(field_key)
+    if cached is not None:
+        return cached
+
+    try:
+        from sdcpy_map import load_field_anomaly_subset
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    if data_dir is None:
+        data_dir = _resolve_map_cache_dir()
+
+    paths = fetch_sdc_map_assets(
+        data_dir=data_dir,
+        driver_key="pdo",
+        field_key=field_key,
+        include_coastline=False,
+    )
+    mapped_field = load_field_anomaly_subset(
+        paths["field"],
+        config=_full_driver_config(),
+        field_key=field_key,
+    )
+    time_values = np.asarray(mapped_field["time"].values)
+    parsed_dates = [_as_calendar_date(value) for value in time_values]
+    valid_dates = [value for value in parsed_dates if value is not None]
+    bounds = _get_field_data_bounds(field_key, data_dir=data_dir)
+    coverage: dict[str, object] = {
+        "n_time": int(mapped_field.sizes.get("time", 0)),
+        "n_lat": int(mapped_field.sizes.get("lat", 0)),
+        "n_lon": int(mapped_field.sizes.get("lon", 0)),
+        "lat_min": float(bounds["lat_min"]),
+        "lat_max": float(bounds["lat_max"]),
+        "lon_min": float(bounds["lon_min"]),
+        "lon_max": float(bounds["lon_max"]),
+    }
+    if valid_dates:
+        coverage["time_start"] = min(valid_dates).isoformat()
+        coverage["time_end"] = max(valid_dates).isoformat()
+    with _FIELD_COVERAGE_CACHE_LOCK:
+        _FIELD_COVERAGE_CACHE[field_key] = coverage
+    return coverage
+
+
+def get_sdc_map_catalog() -> dict:
+    """Return available map datasets and human-readable descriptions."""
+    try:
+        from sdcpy_map.datasets import DRIVER_DATASETS, FIELD_DATASETS
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    def _safe_driver_coverage(key: str) -> dict[str, object]:
+        try:
+            return _get_driver_data_coverage(key)
+        except Exception:
+            return {}
+
+    def _safe_field_coverage(key: str) -> dict[str, object]:
+        try:
+            return _get_field_data_coverage(key)
+        except Exception:
+            return {}
+
+    drivers = [
+        (
+            {
+                "key": key,
+                "description": str(getattr(spec, "description", "")),
+            }
+            | _safe_driver_coverage(key)
+        )
+        for key, spec in sorted(DRIVER_DATASETS.items())
+    ]
+    fields = [
+        (
+            {
+                "key": key,
+                "description": str(getattr(spec, "description", "")),
+                "variable": str(getattr(spec, "variable", "")),
+            }
+            | _safe_field_coverage(key)
+        )
+        for key, spec in sorted(FIELD_DATASETS.items())
+    ]
+    return {"drivers": drivers, "fields": fields}
+
+
+def get_sdc_map_driver_defaults(driver_key: str, window_years: int = 3) -> dict:
+    """Return dynamic peak-date defaults and a +/- window around it."""
+    try:
+        from sdcpy_map import load_driver_series
+        from sdcpy_map.datasets import DRIVER_DATASETS, download_if_missing
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    if driver_key not in DRIVER_DATASETS:
+        supported = ", ".join(sorted(DRIVER_DATASETS))
+        raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
+
+    data_dir = _resolve_map_cache_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    driver_spec = DRIVER_DATASETS[driver_key]
+    driver_url = _canonical_psl_download_url(driver_spec.url)
+    driver_path = _download_map_asset(
+        download_if_missing,
+        driver_url,
+        data_dir / _map_asset_filename("driver", driver_key, driver_url),
+    )
+
+    full_driver = load_driver_series(
+        driver_path,
+        config=_full_driver_config(),
+        driver_key=driver_key,
+    )
+    defaults = _derive_driver_peak_window(full_driver, years=max(1, int(window_years)))
+    defaults["driver_dataset"] = driver_key
+    return defaults
+
+
 def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[str, float]:
     """Compute the geographic bounds of a field dataset without constraints.
     
@@ -694,12 +1012,7 @@ def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[
         ) from exc
     
     if data_dir is None:
-        data_dir = Path(
-            os.getenv(
-                "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
-                str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
-            )
-        )
+        data_dir = _resolve_map_cache_dir()
     
     # Fetch the field dataset
     paths = fetch_sdc_map_assets(
@@ -734,6 +1047,112 @@ def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[
     return bounds
 
 
+def _resolve_map_bounds(
+    request: SDCMapJobRequest,
+    data_dir: Path | str | None = None,
+) -> tuple[float, float, float, float, bool]:
+    bounds = (request.lat_min, request.lat_max, request.lon_min, request.lon_max)
+    if all(value is not None for value in bounds):
+        return (
+            float(request.lat_min),
+            float(request.lat_max),
+            float(request.lon_min),
+            float(request.lon_max),
+            False,
+        )
+
+    field_bounds = _get_field_data_bounds(request.field_dataset, data_dir=data_dir)
+    return (
+        float(field_bounds["lat_min"]),
+        float(field_bounds["lat_max"]),
+        float(field_bounds["lon_min"]),
+        float(field_bounds["lon_max"]),
+        True,
+    )
+
+
+def _resolve_map_temporal_window(
+    request: SDCMapJobRequest,
+    driver_full: pd.Series,
+) -> tuple[str, str, str]:
+    defaults = _derive_driver_peak_window(driver_full, years=3)
+    peak_date = _as_calendar_date(request.peak_date or defaults["peak_date"])
+    time_start = _as_calendar_date(request.time_start or defaults["time_start"])
+    time_end = _as_calendar_date(request.time_end or defaults["time_end"])
+    if peak_date is None:
+        raise ValueError("`peak_date` is invalid.")
+    if time_start is None or time_end is None:
+        raise ValueError("`time_start` and `time_end` must be valid dates.")
+    if time_start > time_end:
+        raise ValueError("`time_start` must be <= `time_end`.")
+    return peak_date.isoformat(), time_start.isoformat(), time_end.isoformat()
+
+
+def _compute_sdcmap_layers_with_progress(
+    *,
+    driver: pd.Series,
+    mapped_field,
+    config,
+    progress_hook: Callable[[int, int, str], None] | None,
+    progress_base_current: int,
+    progress_total: int,
+) -> tuple[dict[str, np.ndarray], int]:
+    try:
+        from sdcpy_map.layers import _summarize_gridpoint as summarize_gridpoint
+    except Exception:
+        from sdcpy_map import compute_sdcmap_layers
+
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
+        nlat = int(mapped_field.sizes.get("lat", 0))
+        nlon = int(mapped_field.sizes.get("lon", 0))
+        return layers, max(0, nlat * nlon)
+
+    time_values = np.asarray(mapped_field["time"].values)
+    peak_idx = _nearest_time_index(time_values, str(config.peak_date))
+    driver_vals = driver.to_numpy(dtype=float)
+    field_values = np.asarray(mapped_field.values, dtype=float)
+
+    nlat = int(mapped_field.sizes.get("lat", 0))
+    nlon = int(mapped_field.sizes.get("lon", 0))
+    total_cells = max(0, nlat * nlon)
+
+    layers = {
+        "corr_mean": np.full((nlat, nlon), np.nan, dtype=float),
+        "driver_rel_time_mean": np.full((nlat, nlon), np.nan, dtype=float),
+        "lag_mean": np.full((nlat, nlon), np.nan, dtype=float),
+        "timing_combo": np.full((nlat, nlon), np.nan, dtype=float),
+        "strong_span": np.full((nlat, nlon), np.nan, dtype=float),
+        "strong_start": np.full((nlat, nlon), np.nan, dtype=float),
+        "dominant_sign": np.full((nlat, nlon), np.nan, dtype=float),
+        "n_selected": np.full((nlat, nlon), np.nan, dtype=float),
+    }
+
+    processed = 0
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        for i in range(nlat):
+            for j in range(nlon):
+                local_vals = np.asarray(field_values[:, i, j], dtype=float)
+                summary = summarize_gridpoint(
+                    driver_vals=driver_vals,
+                    local_vals=local_vals,
+                    config=config,
+                    peak_idx=peak_idx,
+                )
+                if summary is not None:
+                    for key, value in summary.items():
+                        layers[key][i, j] = value
+
+                processed += 1
+                _emit_progress(
+                    progress_hook,
+                    progress_base_current + processed,
+                    progress_total,
+                    f"Computing SDC map ({processed}/{total_cells} cells)",
+                )
+
+    return layers, total_cells
+
 
 def build_sdc_map_exploration(payload: dict) -> dict:
     """Load map datasets and return exploration-ready arrays for interactive UI."""
@@ -752,44 +1171,10 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
         ) from exc
 
-    # Compute dynamic bounds if using hardcoded defaults
-    lat_min = request.lat_min
-    lat_max = request.lat_max
-    lon_min = request.lon_min
-    lon_max = request.lon_max
-    
-    # Check if bounds are the old hardcoded defaults
-    if (lat_min, lat_max, lon_min, lon_max) == (20, 70, -160, -60):
-        field_bounds = _get_field_data_bounds(request.field_dataset)
-        lat_min = field_bounds["lat_min"]
-        lat_max = field_bounds["lat_max"]
-        lon_min = field_bounds["lon_min"]
-        lon_max = field_bounds["lon_max"]
-
-    config = SDCMapConfig(
-        fragment_size=request.fragment_size,
-        n_permutations=request.n_permutations,
-        two_tailed=request.two_tailed,
-        min_lag=request.min_lag,
-        max_lag=request.max_lag,
-        alpha=request.alpha,
-        top_fraction=request.top_fraction,
-        peak_date=request.peak_date,
-        time_start=request.time_start,
-        time_end=request.time_end,
-        lat_min=lat_min,
-        lat_max=lat_max,
-        lon_min=lon_min,
-        lon_max=lon_max,
-        lat_stride=request.lat_stride,
-        lon_stride=request.lon_stride,
-    )
-
-    data_dir = Path(
-        os.getenv(
-            "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
-            str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
-        )
+    data_dir = _resolve_map_cache_dir()
+    lat_min, lat_max, lon_min, lon_max, using_full_bounds = _resolve_map_bounds(
+        request,
+        data_dir=data_dir,
     )
     cache_key = (
         str(data_dir.resolve()),
@@ -809,13 +1194,39 @@ def build_sdc_map_exploration(payload: dict) -> dict:
         with _MAP_DATA_PATH_CACHE_LOCK:
             _MAP_DATA_PATH_CACHE[cache_key] = paths
 
+    full_driver = load_driver_series(
+        paths["driver"],
+        config=_full_driver_config(),
+        driver_key=request.driver_dataset,
+    )
+    peak_date, time_start, time_end = _resolve_map_temporal_window(request, full_driver)
+
+    config = SDCMapConfig(
+        fragment_size=request.fragment_size,
+        n_permutations=request.n_permutations,
+        two_tailed=request.two_tailed,
+        min_lag=request.min_lag,
+        max_lag=request.max_lag,
+        alpha=request.alpha,
+        top_fraction=request.top_fraction,
+        peak_date=peak_date,
+        time_start=time_start,
+        time_end=time_end,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
+        lat_stride=request.lat_stride,
+        lon_stride=request.lon_stride,
+    )
+
     driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
     mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
     driver = align_driver_to_field(driver, mapped_field)
     coastline = load_coastline(paths["coastline"])
     lats, lons = grid_coordinates(mapped_field)
 
-    time_index = pd.to_datetime(mapped_field["time"].values)
+    time_values = np.asarray(mapped_field["time"].values)
     field_values = np.asarray(mapped_field.values, dtype=float)
     driver_values = driver.to_numpy(dtype=float)
 
@@ -852,8 +1263,9 @@ def build_sdc_map_exploration(payload: dict) -> dict:
         "summary": {
             "driver_dataset": request.driver_dataset,
             "field_dataset": request.field_dataset,
-            "time_start": request.time_start,
-            "time_end": request.time_end,
+            "time_start": time_start,
+            "time_end": time_end,
+            "peak_date": peak_date,
             "n_time": int(mapped_field.sizes.get("time", 0)),
             "n_lat": int(mapped_field.sizes.get("lat", 0)),
             "n_lon": int(mapped_field.sizes.get("lon", 0)),
@@ -870,8 +1282,9 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             "used_lat_max": lat_max,
             "used_lon_min": lon_min,
             "used_lon_max": lon_max,
+            "full_bounds_selected": using_full_bounds,
         },
-        "time_index": [ts.strftime("%Y-%m-%d") for ts in time_index],
+        "time_index": _serialize_time_labels(time_values),
         "driver_values": _serialize_optional_array(driver_values),
         "lat": [float(v) for v in np.asarray(lats, dtype=float).tolist()],
         "lon": [float(v) for v in np.asarray(lons, dtype=float).tolist()],
@@ -899,7 +1312,6 @@ def run_sdc_map_job(
         from sdcpy_map import (
             SDCMapConfig,
             align_driver_to_field,
-            compute_sdcmap_layers,
             grid_coordinates,
             load_coastline,
             load_driver_series,
@@ -911,50 +1323,21 @@ def run_sdc_map_job(
             "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
         ) from exc
 
-    # Compute dynamic bounds if using hardcoded defaults
-    lat_min = request.lat_min
-    lat_max = request.lat_max
-    lon_min = request.lon_min
-    lon_max = request.lon_max
-    
-    # Check if bounds are the old hardcoded defaults
-    if (lat_min, lat_max, lon_min, lon_max) == (20, 70, -160, -60):
-        field_bounds = _get_field_data_bounds(request.field_dataset)
-        lat_min = field_bounds["lat_min"]
-        lat_max = field_bounds["lat_max"]
-        lon_min = field_bounds["lon_min"]
-        lon_max = field_bounds["lon_max"]
-
-    total_steps = 8
-    _emit_progress(progress_hook, 0, total_steps, "Preparing SDC map inputs")
-    config = SDCMapConfig(
-        fragment_size=request.fragment_size,
-        n_permutations=request.n_permutations,
-        two_tailed=request.two_tailed,
-        min_lag=request.min_lag,
-        max_lag=request.max_lag,
-        alpha=request.alpha,
-        top_fraction=request.top_fraction,
-        peak_date=request.peak_date,
-        time_start=request.time_start,
-        time_end=request.time_end,
-        lat_min=lat_min,
-        lat_max=lat_max,
-        lon_min=lon_min,
-        lon_max=lon_max,
-        lat_stride=request.lat_stride,
-        lon_stride=request.lon_stride,
-    )
-
-    data_dir = Path(
-        os.getenv(
-            "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
-            str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
-        )
+    initial_progress_total = 8
+    _emit_progress(progress_hook, 0, initial_progress_total, "Preparing SDC map inputs")
+    data_dir = _resolve_map_cache_dir()
+    lat_min, lat_max, lon_min, lon_max, using_full_bounds = _resolve_map_bounds(
+        request,
+        data_dir=data_dir,
     )
 
     started = perf_counter()
-    _emit_progress(progress_hook, 1, total_steps, f"Ensuring driver dataset ({request.driver_dataset})")
+    _emit_progress(
+        progress_hook,
+        1,
+        initial_progress_total,
+        f"Ensuring driver dataset ({request.driver_dataset})",
+    )
     cache_key = (
         str(data_dir.resolve()),
         request.driver_dataset,
@@ -967,16 +1350,16 @@ def run_sdc_map_job(
         _emit_progress(
             progress_hook,
             1,
-            total_steps,
+            initial_progress_total,
             f"Using in-memory driver cache ({request.driver_dataset})",
         )
         _emit_progress(
             progress_hook,
             2,
-            total_steps,
+            initial_progress_total,
             f"Using in-memory field cache ({request.field_dataset})",
         )
-        _emit_progress(progress_hook, 3, total_steps, "Using in-memory coastline cache")
+        _emit_progress(progress_hook, 3, initial_progress_total, "Using in-memory coastline cache")
         paths = cached_paths
     else:
         paths = fetch_sdc_map_assets(
@@ -985,47 +1368,58 @@ def run_sdc_map_job(
             field_key=request.field_dataset,
             progress_hook=progress_hook,
             progress_start=1,
-            progress_total=total_steps,
+            progress_total=initial_progress_total,
         )
         with _MAP_DATA_PATH_CACHE_LOCK:
             _MAP_DATA_PATH_CACHE[cache_key] = paths
 
-    _emit_progress(progress_hook, 4, total_steps, "Loading and aligning series")
+    full_driver = load_driver_series(
+        paths["driver"],
+        config=_full_driver_config(),
+        driver_key=request.driver_dataset,
+    )
+    peak_date, time_start, time_end = _resolve_map_temporal_window(request, full_driver)
+    config = SDCMapConfig(
+        fragment_size=request.fragment_size,
+        n_permutations=request.n_permutations,
+        two_tailed=request.two_tailed,
+        min_lag=request.min_lag,
+        max_lag=request.max_lag,
+        alpha=request.alpha,
+        top_fraction=request.top_fraction,
+        peak_date=peak_date,
+        time_start=time_start,
+        time_end=time_end,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
+        lat_stride=request.lat_stride,
+        lon_stride=request.lon_stride,
+    )
+
+    _emit_progress(progress_hook, 4, initial_progress_total, "Loading and aligning series")
     driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
     mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
     driver = align_driver_to_field(driver, mapped_field)
     lats, lons = grid_coordinates(mapped_field)
-    
-    # Compute total grid cells for progress reporting
-    n_lat = len(lats)
-    n_lon = len(lons)
-    total_cells = n_lat * n_lon if n_lat > 0 and n_lon > 0 else 1
 
-    _emit_progress(progress_hook, 5, total_steps, f"Computing SDC map (0/{total_cells} cells)")
-    
-    # Capture layer computation progress
-    cells_computed = 0
-    
-    def progress_callback(current_cell: int = 0):
-        """Callback for tracking SDC computation progress."""
-        nonlocal cells_computed
-        cells_computed = current_cell
-        # Map 0.0-0.8 of step 5 to cell computation progress
-        progress_value = 5 + (cells_computed / total_cells * 0.8) if total_cells > 0 else 5
-        _emit_progress(
-            progress_hook,
-            int(progress_value),
-            total_steps,
-            f"Computing SDC map ({cells_computed}/{total_cells} cells)"
-        )
-    
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
-    
-    progress_callback(total_cells)  # Mark as complete
+    n_lat = int(mapped_field.sizes.get("lat", 0))
+    n_lon = int(mapped_field.sizes.get("lon", 0))
+    total_cells = max(1, n_lat * n_lon)
+    progress_total = total_cells + 7
+    _emit_progress(progress_hook, 4, progress_total, f"Grid ready ({n_lat}x{n_lon}). Starting cell loop")
+    layers, _ = _compute_sdcmap_layers_with_progress(
+        driver=driver,
+        mapped_field=mapped_field,
+        config=config,
+        progress_hook=progress_hook,
+        progress_base_current=4,
+        progress_total=progress_total,
+    )
     coastline = load_coastline(paths["coastline"])
 
-    _emit_progress(progress_hook, 6, total_steps, "Rendering map figure")
+    _emit_progress(progress_hook, progress_total - 2, progress_total, "Rendering map figure")
     fig, *_ = plot_layer_maps_compact(
         layers=layers,
         lats=lats,
@@ -1045,7 +1439,7 @@ def run_sdc_map_job(
     except Exception:
         pass
 
-    _emit_progress(progress_hook, 7, total_steps, "Packing outputs")
+    _emit_progress(progress_hook, progress_total - 1, progress_total, "Packing outputs")
     nc_bytes = _build_map_netcdf_bytes(
         layers=layers,
         lats=lats,
@@ -1097,16 +1491,18 @@ def run_sdc_map_job(
         notes.append("No valid grid cells passed filtering with the current parameters.")
     if request.n_permutations > 99:
         notes.append("High permutation count selected; map runs may take substantially longer.")
+    if using_full_bounds:
+        notes.append("Full geographic map was computed; this mode is the most computationally expensive.")
 
-    _emit_progress(progress_hook, total_steps, total_steps, "Completed")
+    _emit_progress(progress_hook, progress_total, progress_total, "Completed")
     layer_maps = _build_map_layer_payload(layers=layers, lats=lats, lons=lons, coastline=coastline)
     return {
         "summary": {
             "driver_dataset": request.driver_dataset,
             "field_dataset": request.field_dataset,
-            "time_start": request.time_start,
-            "time_end": request.time_end,
-            "peak_date": request.peak_date,
+            "time_start": time_start,
+            "time_end": time_end,
+            "peak_date": peak_date,
             "fragment_size": int(request.fragment_size),
             "n_permutations": int(request.n_permutations),
             "alpha": float(request.alpha),
@@ -1132,6 +1528,7 @@ def run_sdc_map_job(
             "positive_dominant_cells": positive_cells,
             "negative_dominant_cells": negative_cells,
             "mean_abs_corr": mean_abs_corr,
+            "full_bounds_selected": using_full_bounds,
         },
         "notes": notes,
         "runtime_seconds": float(runtime_seconds),
