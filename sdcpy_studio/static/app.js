@@ -14,6 +14,10 @@ const plotAlphaInput = document.getElementById("plot_alpha");
 const plotAlphaValue = document.getElementById("plot_alpha_value");
 const plotHeatmapStepInput = document.getElementById("plot_heatmap_step");
 const plotApplyButton = document.getElementById("plot_apply");
+const workflowTabSdcButton = document.getElementById("workflow_tab_sdc");
+const workflowTabMapButton = document.getElementById("workflow_tab_map");
+const workflowSdcCards = Array.from(document.querySelectorAll(".workflow-sdc"));
+const workflowMapCards = Array.from(document.querySelectorAll(".workflow-map"));
 
 const datasetFileInput = document.getElementById("dataset_file");
 const datasetDateSelect = document.getElementById("dataset_date_col");
@@ -39,10 +43,40 @@ const pasteValidationText = document.getElementById("paste_validation");
 const downloadXlsxButton = document.getElementById("download_xlsx");
 const downloadPngButton = document.getElementById("download_png");
 const downloadSvgButton = document.getElementById("download_svg");
+const mapDriverDatasetInput = document.getElementById("map_driver_dataset");
+const mapFieldDatasetInput = document.getElementById("map_field_dataset");
+const mapFragmentSizeInput = document.getElementById("map_fragment_size");
+const mapAlphaInput = document.getElementById("map_alpha");
+const mapTopFractionInput = document.getElementById("map_top_fraction");
+const mapPermutationsInput = document.getElementById("map_n_permutations");
+const mapMinLagInput = document.getElementById("map_min_lag");
+const mapMaxLagInput = document.getElementById("map_max_lag");
+const mapTimeStartInput = document.getElementById("map_time_start");
+const mapTimeEndInput = document.getElementById("map_time_end");
+const mapPeakDateInput = document.getElementById("map_peak_date");
+const mapLoadButton = document.getElementById("map_load");
+const mapRunButton = document.getElementById("map_run");
+const mapStatusText = document.getElementById("map_status");
+const mapProgressLabel = document.getElementById("map_progress_label");
+const mapProgressValue = document.getElementById("map_progress_value");
+const mapProgressTrack = document.getElementById("map_progress_track");
+const mapProgressFill = document.getElementById("map_progress_fill");
+const mapProgressEta = document.getElementById("map_progress_eta");
+const mapPhaseBadge = document.getElementById("map_phase_badge");
+const mapExploreControls = document.getElementById("map_explore_controls");
+const mapTimeSlider = document.getElementById("map_time_slider");
+const mapTimeSliderLabel = document.getElementById("map_time_slider_label");
+const mapResultTabs = document.getElementById("map_result_tabs");
+const mapPlot = document.getElementById("sdc_map_plot");
+const mapSelectedCellText = document.getElementById("map_selected_cell");
+const mapSummary = document.getElementById("sdc_map_summary");
+const mapDownloadPngButton = document.getElementById("map_download_png");
+const mapDownloadNcButton = document.getElementById("map_download_nc");
 
 let activePoll = null;
 let latestResult = null;
 let latestJobId = null;
+let activeWorkflowTab = "sdc";
 let latestDatasetId = null;
 let alphaRenderTimer = null;
 let datasetInspectToken = 0;
@@ -51,7 +85,33 @@ let activeInputMode = "dataset";
 let statusHideTimer = null;
 let hasExpandedExplorerAfterFirstRun = false;
 let explorerResizeTimer = null;
+let mapResizeTimer = null;
 let pasteValidationTimer = null;
+let mapActivePoll = null;
+let latestMapResult = null;
+let latestMapExplore = null;
+let latestMapJobId = null;
+let mapRunStartedAt = 0;
+let mapRunBusy = false;
+let mapLoadBusy = false;
+let mapPhase = "idle";
+let mapSelectedTimeIndex = 0;
+let mapSelectedCell = null;
+let mapActiveTab = 0;
+let mapCellSeriesCache = new Map();
+let mapDownloadsEnabled = false;
+
+const RD_BU_WHITE_CENTER = [
+  [0.0, "#053061"],
+  [0.125, "#2166ac"],
+  [0.25, "#4393c3"],
+  [0.375, "#92c5de"],
+  [0.5, "#ffffff"],
+  [0.625, "#f4a582"],
+  [0.75, "#d6604d"],
+  [0.875, "#b2182b"],
+  [1.0, "#67001f"],
+];
 
 function getConfig() {
   return {
@@ -219,9 +279,209 @@ function setDownloadButtons(enabled) {
   downloadSvgButton.disabled = !enabled;
 }
 
+function setMapDownloadButtons(enabled) {
+  mapDownloadsEnabled = !!enabled;
+  const isReady = mapDownloadsEnabled && !!latestMapJobId;
+  if (mapDownloadNcButton) {
+    mapDownloadNcButton.disabled = !isReady;
+  }
+  if (mapDownloadPngButton) {
+    mapDownloadPngButton.disabled = !isReady;
+  }
+}
+
+function setMapStatus(message, isError = false) {
+  if (!mapStatusText) {
+    return;
+  }
+  mapStatusText.textContent = message;
+  mapStatusText.classList.toggle("error", !!isError);
+}
+
+function setMapPhase(nextPhase) {
+  mapPhase = nextPhase || "idle";
+  if (mapPhaseBadge) {
+    mapPhaseBadge.textContent = `Phase: ${mapPhase}`;
+  }
+  if (mapExploreControls) {
+    mapExploreControls.hidden = mapPhase !== "explore";
+  }
+  if (mapResultTabs) {
+    mapResultTabs.hidden = mapPhase !== "results";
+  }
+}
+
+function refreshMapRunButtonState() {
+  if (!mapRunButton) {
+    return;
+  }
+  const canRun = !!latestMapExplore && !mapLoadBusy && !mapRunBusy;
+  mapRunButton.disabled = !canRun;
+}
+
+function setMapLoadBusy(isBusy) {
+  mapLoadBusy = !!isBusy;
+  if (mapLoadButton) {
+    mapLoadButton.disabled = mapLoadBusy || mapRunBusy;
+    mapLoadButton.textContent = mapLoadBusy ? "Loading datasets..." : "Load driver + dataset";
+  }
+  refreshMapRunButtonState();
+}
+
+function setMapRunBusy(isBusy) {
+  mapRunBusy = !!isBusy;
+  if (!mapRunButton) {
+    return;
+  }
+  mapRunButton.textContent = mapRunBusy ? "Running SDC map..." : "Run SDC map";
+  if (mapLoadButton) {
+    mapLoadButton.disabled = mapLoadBusy || mapRunBusy;
+  }
+  refreshMapRunButtonState();
+}
+
+function setWorkflowTab(mode) {
+  const nextTab = mode === "map" ? "map" : "sdc";
+  activeWorkflowTab = nextTab;
+
+  workflowSdcCards.forEach((card) => {
+    card.hidden = nextTab !== "sdc";
+  });
+  workflowMapCards.forEach((card) => {
+    card.hidden = nextTab !== "map";
+  });
+
+  if (workflowTabSdcButton) {
+    workflowTabSdcButton.classList.toggle("is-active", nextTab === "sdc");
+    workflowTabSdcButton.setAttribute("aria-selected", nextTab === "sdc" ? "true" : "false");
+  }
+  if (workflowTabMapButton) {
+    workflowTabMapButton.classList.toggle("is-active", nextTab === "map");
+    workflowTabMapButton.setAttribute("aria-selected", nextTab === "map" ? "true" : "false");
+  }
+}
+
+function getMapConfig() {
+  return {
+    driver_dataset: mapDriverDatasetInput?.value || "pdo",
+    field_dataset: mapFieldDatasetInput?.value || "ncep_air",
+    fragment_size: Math.max(2, Math.round(Number(mapFragmentSizeInput?.value) || 12)),
+    alpha: Number(mapAlphaInput?.value || 0.05),
+    top_fraction: Number(mapTopFractionInput?.value || 0.25),
+    n_permutations: Math.max(1, Math.round(Number(mapPermutationsInput?.value) || 49)),
+    min_lag: Math.round(Number(mapMinLagInput?.value) || -6),
+    max_lag: Math.round(Number(mapMaxLagInput?.value) || 6),
+    time_start: mapTimeStartInput?.value || "2010-01-01",
+    time_end: mapTimeEndInput?.value || "2023-12-01",
+    peak_date: mapPeakDateInput?.value || "2015-01-01",
+    two_tailed: false,
+    lat_min: 20,
+    lat_max: 70,
+    lon_min: -160,
+    lon_max: -60,
+    lat_stride: 1,
+    lon_stride: 1,
+  };
+}
+
 function updateProgress(progress, status) {
   void progress;
   void status;
+}
+
+function formatDurationSeconds(totalSeconds) {
+  const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (mins < 60) {
+    return secs ? `${mins}m ${secs}s` : `${mins}m`;
+  }
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+function setMapProgress({
+  percent = 0,
+  label = "Idle",
+  etaText = "Expected runtime: up to a few minutes.",
+} = {}) {
+  const clampedPercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+
+  if (mapProgressLabel) {
+    mapProgressLabel.textContent = label;
+  }
+  if (mapProgressValue) {
+    mapProgressValue.textContent = `${clampedPercent}%`;
+  }
+  if (mapProgressFill) {
+    mapProgressFill.style.width = `${clampedPercent}%`;
+  }
+  if (mapProgressTrack) {
+    mapProgressTrack.setAttribute("aria-valuenow", String(clampedPercent));
+  }
+  if (mapProgressEta) {
+    mapProgressEta.textContent = etaText;
+  }
+}
+
+function updateMapProgress(progress, status) {
+  const normalizedStatus = String(status || "").toLowerCase();
+  const rawCurrent = Math.max(0, Number(progress?.current) || 0);
+  const total = Math.max(1, Number(progress?.total) || 1);
+  const current = normalizedStatus === "succeeded" ? total : Math.min(rawCurrent, total);
+  const stageLabel = progress?.description ? String(progress.description) : "Running";
+
+  let percent = 0;
+  if (normalizedStatus === "succeeded") {
+    percent = 100;
+  } else if (normalizedStatus === "failed") {
+    percent = (current / total) * 100;
+  } else if (normalizedStatus === "running") {
+    percent = (current / total) * 100;
+  }
+
+  const stepLabel = total > 1 ? `Step ${Math.min(current, total)}/${total}` : "Step 1/1";
+  let label = stageLabel;
+  if (normalizedStatus === "queued") {
+    label = "Queued";
+  } else if (normalizedStatus === "running") {
+    label = `${stepLabel}: ${stageLabel}`;
+  } else if (normalizedStatus === "succeeded") {
+    label = "Completed";
+  } else if (normalizedStatus === "failed") {
+    label = stageLabel && stageLabel.toLowerCase() !== "failed" ? `Failed: ${stageLabel}` : "Failed";
+  }
+
+  const elapsedSeconds =
+    mapRunStartedAt > 0 ? Math.max(0, (Date.now() - mapRunStartedAt) / 1000) : 0;
+  let etaText = "Expected runtime: up to a few minutes.";
+  if (normalizedStatus === "queued") {
+    etaText = "Queued. Waiting for worker to pick up the job.";
+  } else if (normalizedStatus === "succeeded") {
+    etaText = `Completed in ${formatDurationSeconds(elapsedSeconds)}.`;
+  } else if (normalizedStatus === "failed") {
+    etaText = elapsedSeconds
+      ? `Stopped due to an error after ${formatDurationSeconds(elapsedSeconds)}.`
+      : "Stopped due to an error.";
+  } else if (current > 0 && current < total && elapsedSeconds > 0) {
+    const secondsPerStep = elapsedSeconds / Math.max(1, current);
+    const remainingSeconds = Math.max(1, (total - current) * secondsPerStep);
+    etaText = `Elapsed: ${formatDurationSeconds(elapsedSeconds)}. Remaining: ~${formatDurationSeconds(remainingSeconds)}.`;
+  } else if (normalizedStatus === "running") {
+    etaText = elapsedSeconds
+      ? `Elapsed: ${formatDurationSeconds(elapsedSeconds)}. Estimating remaining...`
+      : "Estimating remaining time...";
+  }
+
+  setMapProgress({
+    percent,
+    label,
+    etaText,
+  });
 }
 
 function syncPlotControlsFromSettings() {
@@ -687,17 +947,6 @@ function renderTwoWayExplorer(result) {
   const indicatorHeight = heatmapDomainHeight * indicatorSpanRatio;
   const indicatorLabelX = indicatorCornerX + indicatorWidth + heatmapDomainWidth * 0.012;
   const indicatorLabelY = indicatorCornerY - indicatorHeight * 0.02;
-  const rdBuWhiteCenter = [
-    [0.0, "#053061"],
-    [0.125, "#2166ac"],
-    [0.25, "#4393c3"],
-    [0.375, "#92c5de"],
-    [0.5, "#ffffff"],
-    [0.625, "#f4a582"],
-    [0.75, "#d6604d"],
-    [0.875, "#b2182b"],
-    [1.0, "#67001f"],
-  ];
   const corrLabel = methodCorrelationLabel(result?.summary?.method);
   const panelFrameShapes = [
     {
@@ -800,7 +1049,7 @@ function renderTwoWayExplorer(result) {
       y: heatY,
       z: zSig,
       customdata: heatmapHoverData,
-      colorscale: rdBuWhiteCenter,
+      colorscale: RD_BU_WHITE_CENTER,
       zmin: -zAbsMax,
       zmax: zAbsMax,
       zmid: 0,
@@ -1538,12 +1787,741 @@ function triggerDownload(fmt) {
   window.open(`/api/v1/jobs/${latestJobId}/download/${fmt}`, "_blank");
 }
 
+function triggerMapDownload(fmt) {
+  if (latestMapJobId && (fmt === "png" || fmt === "nc")) {
+    window.open(`/api/v1/jobs/sdc-map/${latestMapJobId}/download/${fmt}`, "_blank");
+  }
+}
+
+function nearestIndex(values, target) {
+  if (!values?.length) {
+    return 0;
+  }
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let idx = 0; idx < values.length; idx += 1) {
+    const dist = Math.abs(Number(values[idx]) - Number(target));
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = idx;
+    }
+  }
+  return bestIdx;
+}
+
+function getCellSeries(explore, latIndex, lonIndex) {
+  const key = `${latIndex}:${lonIndex}`;
+  if (mapCellSeriesCache.has(key)) {
+    return mapCellSeriesCache.get(key);
+  }
+  const series = (explore.field_frames || []).map((frame) => {
+    const value = frame?.[latIndex]?.[lonIndex];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  });
+  mapCellSeriesCache.set(key, series);
+  return series;
+}
+
+function pickInitialCell(explore) {
+  const latCount = explore?.lat?.length || 0;
+  const lonCount = explore?.lon?.length || 0;
+  if (!latCount || !lonCount) {
+    return { latIndex: 0, lonIndex: 0 };
+  }
+  const preferred = explore?.summary?.first_valid_index;
+  if (
+    Array.isArray(preferred) &&
+    preferred.length >= 3 &&
+    Number.isFinite(preferred[1]) &&
+    Number.isFinite(preferred[2])
+  ) {
+    return {
+      latIndex: Math.max(0, Math.min(latCount - 1, Math.round(Number(preferred[1])))),
+      lonIndex: Math.max(0, Math.min(lonCount - 1, Math.round(Number(preferred[2])))),
+    };
+  }
+  return {
+    latIndex: Math.floor(latCount / 2),
+    lonIndex: Math.floor(lonCount / 2),
+  };
+}
+
+function renderMapSummary(summary, runtimeSeconds = null) {
+  if (!mapSummary) {
+    return;
+  }
+  const keys = [
+    ["driver_dataset", "Driver"],
+    ["field_dataset", "Field"],
+    ["fragment_size", "Fragment"],
+    ["alpha", "Alpha"],
+    ["top_fraction", "Top fraction"],
+    ["n_time", "Time points"],
+    ["n_lat", "Lat points"],
+    ["n_lon", "Lon points"],
+    ["valid_cells", "Valid cells"],
+    ["valid_values", "Valid values"],
+    ["mean_abs_corr", "Mean |corr|"],
+  ];
+  const items = keys
+    .filter(([key]) => Object.prototype.hasOwnProperty.call(summary, key))
+    .map(([key, label]) => {
+      const value = summary[key];
+      const pretty =
+        typeof value === "number"
+          ? value.toFixed(4).replace(/\.0000$/, "")
+          : value === null || value === undefined
+            ? "NA"
+            : String(value);
+      return `<div class="stat"><span class="stat-label">${label}</span><span class="stat-value">${pretty}</span></div>`;
+    });
+  if (typeof runtimeSeconds === "number" && Number.isFinite(runtimeSeconds)) {
+    items.push(
+      `<div class="stat"><span class="stat-label">Runtime (s)</span><span class="stat-value">${runtimeSeconds.toFixed(2)}</span></div>`
+    );
+  }
+  mapSummary.innerHTML = items.join("");
+}
+
+function setSelectedCellSummary(explore, latIndex, lonIndex) {
+  if (!mapSelectedCellText) {
+    return;
+  }
+  const latValue = explore?.lat?.[latIndex];
+  const lonValue = explore?.lon?.[lonIndex];
+  const date = explore?.time_index?.[mapSelectedTimeIndex] || "NA";
+  mapSelectedCellText.textContent = `Selected grid cell: lat=${Number(latValue).toFixed(2)}, lon=${Number(lonValue).toFixed(2)} at ${date}. Comparison plot uses dual y-axes (driver left, field right).`;
+}
+
+function updateExploreSliderLabel(explore) {
+  if (!mapTimeSliderLabel) {
+    return;
+  }
+  const date = explore?.time_index?.[mapSelectedTimeIndex] || "NA";
+  mapTimeSliderLabel.textContent = date;
+}
+
+function pickExploreColorSettings(minValue, maxValue) {
+  const min = Number(minValue);
+  const max = Number(maxValue);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    return {
+      colorscale: "cividis",
+      zmin: Number.isFinite(min) ? min : 0,
+      zmax: Number.isFinite(max) && max !== min ? max : 1,
+      zmid: undefined,
+      colorbarTitle: "Field value (fixed)",
+    };
+  }
+
+  const hasPositive = max > 0;
+  const hasNegative = min < 0;
+  const span = Math.max(1e-9, max - min);
+  const centerSkew = Math.abs((max + min) / span);
+  const useDiverging = hasPositive && hasNegative && centerSkew <= 0.35;
+
+  if (useDiverging) {
+    const absBound = Math.max(Math.abs(min), Math.abs(max), 1e-6);
+    return {
+      colorscale: RD_BU_WHITE_CENTER,
+      zmin: -absBound,
+      zmax: absBound,
+      zmid: 0,
+      colorbarTitle: "Field anomaly (fixed)",
+    };
+  }
+
+  return {
+    colorscale: "cividis",
+    zmin: min,
+    zmax: max,
+    zmid: undefined,
+    colorbarTitle: "Field value (fixed)",
+  };
+}
+
+async function renderMapExploration(explore) {
+  if (!window.Plotly || !mapPlot) {
+    return;
+  }
+  const timeIndex = explore.time_index || [];
+  const driverValues = (explore.driver_values || []).map((value) =>
+    typeof value === "number" && Number.isFinite(value) ? value : null
+  );
+  const frames = explore.field_frames || [];
+  const lat = explore.lat || [];
+  const lon = explore.lon || [];
+  const coastlineLon = explore.coastline?.lon || [];
+  const coastlineLat = explore.coastline?.lat || [];
+
+  mapSelectedTimeIndex = Math.max(0, Math.min(timeIndex.length - 1, mapSelectedTimeIndex));
+  if (!mapSelectedCell || mapSelectedCell.latIndex >= lat.length || mapSelectedCell.lonIndex >= lon.length) {
+    mapSelectedCell = pickInitialCell(explore);
+  }
+
+  const selectedSeriesRaw = getCellSeries(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+  const selectedSeries = selectedSeriesRaw.map((value) =>
+    typeof value === "number" && Number.isFinite(value) ? value : null
+  );
+  const driverLabel = String(explore?.summary?.driver_dataset || "Driver");
+  const fieldLabel = String(explore?.summary?.field_dataset || "Selected cell");
+  const currentFrame = frames[mapSelectedTimeIndex] || [];
+  const currentDate = timeIndex[mapSelectedTimeIndex] || "NA";
+
+  let fixedMin = Number(explore?.summary?.field_value_min);
+  let fixedMax = Number(explore?.summary?.field_value_max);
+  if (!Number.isFinite(fixedMin) || !Number.isFinite(fixedMax)) {
+    let localMin = Infinity;
+    let localMax = -Infinity;
+    for (const frame of frames) {
+      for (const row of frame || []) {
+        for (const value of row || []) {
+          if (typeof value === "number" && Number.isFinite(value)) {
+            localMin = Math.min(localMin, value);
+            localMax = Math.max(localMax, value);
+          }
+        }
+      }
+    }
+    fixedMin = Number.isFinite(localMin) ? localMin : -1;
+    fixedMax = Number.isFinite(localMax) ? localMax : 1;
+  }
+  const colorSettings = pickExploreColorSettings(fixedMin, fixedMax);
+  const fieldLatMin = Number(explore?.summary?.field_lat_min);
+  const fieldLatMax = Number(explore?.summary?.field_lat_max);
+  const fieldLonMin = Number(explore?.summary?.field_lon_min);
+  const fieldLonMax = Number(explore?.summary?.field_lon_max);
+  const latPadding = 2;
+  const lonPadding = 3;
+  const latFallbackMin = lat.length ? Math.min(...lat) : -90;
+  const latFallbackMax = lat.length ? Math.max(...lat) : 90;
+  const lonFallbackMin = lon.length ? Math.min(...lon) : -180;
+  const lonFallbackMax = lon.length ? Math.max(...lon) : 180;
+  const mapLatRange =
+    Number.isFinite(fieldLatMin) && Number.isFinite(fieldLatMax)
+      ? [fieldLatMin - latPadding, fieldLatMax + latPadding]
+      : [latFallbackMin, latFallbackMax];
+  const mapLonRange =
+    Number.isFinite(fieldLonMin) && Number.isFinite(fieldLonMax)
+      ? [fieldLonMin - lonPadding, fieldLonMax + lonPadding]
+      : [lonFallbackMin, lonFallbackMax];
+  const mapDomainX = [0, 1];
+  const seriesDomainX = [0, 1];
+  const mapDomainY = [0.56, 1];
+  const seriesDomainY = [0, 0.4];
+
+  const traces = [
+    {
+      type: "heatmap",
+      x: lon,
+      y: lat,
+      z: currentFrame,
+      xaxis: "x",
+      yaxis: "y",
+      colorscale: colorSettings.colorscale,
+      zmin: colorSettings.zmin,
+      zmax: colorSettings.zmax,
+      zmid: colorSettings.zmid,
+      hoverongaps: true,
+      colorbar: {
+        title: { text: colorSettings.colorbarTitle },
+        thickness: 12,
+        len: 0.34,
+        y: 0.76,
+      },
+      hovertemplate: "Lon=%{x:.2f}<br>Lat=%{y:.2f}<br>Value=%{z:.3f}<extra></extra>",
+      name: "Field frame",
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: coastlineLon,
+      y: coastlineLat,
+      xaxis: "x",
+      yaxis: "y",
+      line: { color: "#111827", width: 1.1, simplify: false },
+      hoverinfo: "skip",
+      showlegend: false,
+      name: "Coastline",
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: timeIndex,
+      y: driverValues,
+      xaxis: "x2",
+      yaxis: "y2",
+      line: { color: "#111827", width: 2.1, simplify: false },
+      name: driverLabel,
+      hovertemplate: `Date=%{x}<br>${driverLabel}=%{y:.3f}<extra></extra>`,
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: timeIndex,
+      y: selectedSeries,
+      xaxis: "x2",
+      yaxis: "y3",
+      line: { color: "#0d9488", width: 2.1, simplify: false },
+      name: `${fieldLabel} (selected cell)`,
+      hovertemplate: `Date=%{x}<br>${fieldLabel}=%{y:.3f}<extra></extra>`,
+    },
+  ];
+
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: { t: 30, r: 42, b: 36, l: 54 },
+    showlegend: true,
+    legend: { orientation: "h", x: 0, y: -0.03 },
+    height: 860,
+    xaxis: {
+      domain: mapDomainX,
+      anchor: "y",
+      title: "Longitude",
+      showgrid: false,
+      tickfont: { size: 10 },
+      range: mapLonRange,
+    },
+    yaxis: {
+      domain: mapDomainY,
+      anchor: "x",
+      title: "Latitude",
+      showgrid: false,
+      tickfont: { size: 10 },
+      range: mapLatRange,
+      scaleanchor: "x",
+      scaleratio: 1,
+    },
+    xaxis2: {
+      domain: seriesDomainX,
+      anchor: "y2",
+      title: "Date",
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      tickfont: { size: 10 },
+    },
+    yaxis2: {
+      domain: seriesDomainY,
+      anchor: "x2",
+      title: driverLabel,
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      tickfont: { size: 10 },
+    },
+    yaxis3: {
+      domain: seriesDomainY,
+      anchor: "x2",
+      overlaying: "y2",
+      side: "right",
+      title: fieldLabel,
+      showgrid: false,
+      tickfont: { size: 10, color: "#0d9488" },
+    },
+    annotations: [
+      {
+        xref: "paper",
+        yref: "paper",
+        x: (mapDomainX[0] + mapDomainX[1]) / 2,
+        y: Math.min(1.04, mapDomainY[1] + 0.03),
+        showarrow: false,
+        text: `Field map @ ${currentDate}`,
+        font: { size: 12, color: "#111827" },
+      },
+      {
+        xref: "paper",
+        yref: "paper",
+        x: (seriesDomainX[0] + seriesDomainX[1]) / 2,
+        y: Math.min(1.04, seriesDomainY[1] + 0.03),
+        showarrow: false,
+        text: "Selected grid cell vs driver (dual axis)",
+        font: { size: 12, color: "#111827" },
+      },
+    ],
+  };
+
+  await Plotly.newPlot(mapPlot, traces, layout, { responsive: true, displaylogo: false });
+  mapPlot.dataset.resultMapInitialized = "0";
+  if (typeof mapPlot.removeAllListeners === "function") {
+    mapPlot.removeAllListeners("plotly_click");
+  }
+  mapPlot.on("plotly_click", (event) => {
+    const point = event?.points?.[0];
+    if (!point || point.curveNumber !== 0) {
+      return;
+    }
+    const nextLon = Number(point.x);
+    const nextLat = Number(point.y);
+    if (!Number.isFinite(nextLon) || !Number.isFinite(nextLat)) {
+      return;
+    }
+    mapSelectedCell = {
+      latIndex: nearestIndex(lat, nextLat),
+      lonIndex: nearestIndex(lon, nextLon),
+    };
+    const nextSeries = getCellSeries(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+    Plotly.restyle(mapPlot, { y: [nextSeries] }, [3]);
+    setSelectedCellSummary(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+  });
+
+  if (mapTimeSlider) {
+    mapTimeSlider.min = "0";
+    mapTimeSlider.max = String(Math.max(0, timeIndex.length - 1));
+    mapTimeSlider.step = "1";
+    mapTimeSlider.value = String(mapSelectedTimeIndex);
+  }
+  updateExploreSliderLabel(explore);
+  setSelectedCellSummary(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+}
+
+function updateExploreFrame(index) {
+  if (mapPhase !== "explore" || !latestMapExplore || !window.Plotly || !mapPlot?.data?.length) {
+    return;
+  }
+  const maxIndex = Math.max(0, (latestMapExplore.time_index?.length || 1) - 1);
+  mapSelectedTimeIndex = Math.max(0, Math.min(maxIndex, Math.round(Number(index) || 0)));
+  const frame = latestMapExplore.field_frames?.[mapSelectedTimeIndex] || [];
+  const dateLabel = latestMapExplore.time_index?.[mapSelectedTimeIndex] || "NA";
+  Plotly.restyle(mapPlot, { z: [frame] }, [0]);
+  Plotly.relayout(mapPlot, { "annotations[0].text": `Field map @ ${dateLabel}` });
+  if (mapTimeSlider) {
+    mapTimeSlider.value = String(mapSelectedTimeIndex);
+  }
+  updateExploreSliderLabel(latestMapExplore);
+  if (mapSelectedCell) {
+    setSelectedCellSummary(latestMapExplore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
+  }
+}
+
+function getVisibleMapResultLayers(layerMaps) {
+  const layers = layerMaps?.layers || [];
+  return layers.filter((layer) => layer && layer.key !== "dominant_sign");
+}
+
+function resetMapPlotCanvas() {
+  if (!window.Plotly || !mapPlot) {
+    return;
+  }
+  try {
+    window.Plotly.purge(mapPlot);
+  } catch (_error) {
+    // Best effort; `newPlot`/`react` below will still rebuild.
+  }
+  mapPlot.innerHTML = "";
+}
+
+function computeMapResultLayoutMetrics(mapLonRange, mapLatRange) {
+  const lonSpan = Math.max(
+    1e-6,
+    Math.abs(Number(mapLonRange?.[1] ?? 1) - Number(mapLonRange?.[0] ?? 0))
+  );
+  const latSpan = Math.max(
+    1e-6,
+    Math.abs(Number(mapLatRange?.[1] ?? 1) - Number(mapLatRange?.[0] ?? 0))
+  );
+  const panelWidth = Math.max(560, Math.round(mapPlot?.clientWidth || 920));
+  const margins = { t: 78, r: 24, b: 44, l: 56 };
+  const innerWidth = Math.max(360, panelWidth - margins.l - margins.r);
+  const mapHeight = innerWidth * (latSpan / lonSpan);
+  const height = Math.max(440, Math.min(760, Math.round(mapHeight + margins.t + margins.b + 12)));
+  return { margins, height };
+}
+
+function renderMapResultTabs(layerMaps) {
+  if (!mapResultTabs) {
+    return;
+  }
+  const layers = getVisibleMapResultLayers(layerMaps);
+  mapResultTabs.innerHTML = "";
+  layers.forEach((layer, index) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `map-tab-btn${index === mapActiveTab ? " is-active" : ""}`;
+    btn.textContent = layer.label || layer.key || `Layer ${index + 1}`;
+    btn.dataset.index = String(index);
+    btn.addEventListener("click", () => {
+      mapActiveTab = index;
+      renderActiveMapResultLayer();
+    });
+    mapResultTabs.appendChild(btn);
+  });
+}
+
+async function renderActiveMapResultLayer() {
+  if (!latestMapResult?.layer_maps || !window.Plotly || !mapPlot) {
+    return;
+  }
+  const layerMaps = latestMapResult.layer_maps;
+  const layers = getVisibleMapResultLayers(layerMaps);
+  if (!layers.length) {
+    return;
+  }
+  mapActiveTab = Math.max(0, Math.min(layers.length - 1, mapActiveTab));
+  if (mapResultTabs) {
+    Array.from(mapResultTabs.querySelectorAll(".map-tab-btn")).forEach((btn, idx) => {
+      btn.classList.toggle("is-active", idx === mapActiveTab);
+      btn.setAttribute("aria-selected", idx === mapActiveTab ? "true" : "false");
+    });
+  }
+  const layer = layers[mapActiveTab];
+  const summary = latestMapResult?.summary || {};
+  const fieldLatMin = Number(summary.field_lat_min);
+  const fieldLatMax = Number(summary.field_lat_max);
+  const fieldLonMin = Number(summary.field_lon_min);
+  const fieldLonMax = Number(summary.field_lon_max);
+  const latValues = Array.isArray(layerMaps.lat) ? layerMaps.lat : [];
+  const lonValues = Array.isArray(layerMaps.lon) ? layerMaps.lon : [];
+  const latFallbackMin = latValues.length ? Math.min(...latValues) : -90;
+  const latFallbackMax = latValues.length ? Math.max(...latValues) : 90;
+  const lonFallbackMin = lonValues.length ? Math.min(...lonValues) : -180;
+  const lonFallbackMax = lonValues.length ? Math.max(...lonValues) : 180;
+  const latPadding = 2;
+  const lonPadding = 3;
+  const mapLatRange =
+    Number.isFinite(fieldLatMin) && Number.isFinite(fieldLatMax)
+      ? [fieldLatMin - latPadding, fieldLatMax + latPadding]
+      : [latFallbackMin, latFallbackMax];
+  const mapLonRange =
+    Number.isFinite(fieldLonMin) && Number.isFinite(fieldLonMax)
+      ? [fieldLonMin - lonPadding, fieldLonMax + lonPadding]
+      : [lonFallbackMin, lonFallbackMax];
+  const layoutMetrics = computeMapResultLayoutMetrics(mapLonRange, mapLatRange);
+  const traces = [
+    {
+      type: "heatmap",
+      x: layerMaps.lon,
+      y: layerMaps.lat,
+      z: layer.values,
+      xaxis: "x",
+      yaxis: "y",
+      colorscale: layer.colorscale,
+      zmin: layer.zmin,
+      zmax: layer.zmax,
+      zmid: layer.zmin === null || layer.zmax === null ? undefined : 0,
+      hoverongaps: true,
+      colorbar: {
+        orientation: "h",
+        title: { text: layer.label || layer.key, side: "top" },
+        thickness: 11,
+        len: 0.66,
+        x: 0.5,
+        xanchor: "center",
+        y: 1.03,
+        yanchor: "bottom",
+        tickformat: ".2f",
+      },
+      hovertemplate: "Lon=%{x:.2f}<br>Lat=%{y:.2f}<br>Value=%{z:.3f}<extra></extra>",
+      name: layer.label,
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: layerMaps.coastline?.lon || [],
+      y: layerMaps.coastline?.lat || [],
+      xaxis: "x",
+      yaxis: "y",
+      line: { color: "#111827", width: 1.1, simplify: false },
+      hoverinfo: "skip",
+      showlegend: false,
+      name: "Coastline",
+    },
+  ];
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: layoutMetrics.margins,
+    height: layoutMetrics.height,
+    showlegend: false,
+    xaxis: {
+      title: "Longitude",
+      showgrid: false,
+      tickfont: { size: 10 },
+      range: mapLonRange,
+      domain: [0, 1],
+      constrain: "domain",
+    },
+    yaxis: {
+      title: "Latitude",
+      showgrid: false,
+      tickfont: { size: 10 },
+      range: mapLatRange,
+      scaleanchor: "x",
+      scaleratio: 1,
+      domain: [0, 1],
+      constrain: "domain",
+    },
+  };
+  await Plotly.newPlot(mapPlot, traces, layout, { responsive: true, displaylogo: false });
+  mapPlot.dataset.resultMapInitialized = "1";
+  if (typeof mapPlot.removeAllListeners === "function") {
+    mapPlot.removeAllListeners("plotly_click");
+  }
+}
+
+async function fetchMapResult(jobId) {
+  const response = await fetch(`/api/v1/jobs/sdc-map/${jobId}/result`);
+  if (!response.ok) {
+    throw new Error(`Could not fetch map result: ${response.status}`);
+  }
+  const payload = await response.json();
+  const result = payload.result;
+  latestMapResult = result;
+  latestMapJobId = jobId;
+  mapActiveTab = 0;
+  setMapPhase("results");
+  resetMapPlotCanvas();
+  renderMapSummary(result.summary, result.runtime_seconds);
+  renderMapResultTabs(result.layer_maps);
+  await renderActiveMapResultLayer();
+  mapDownloadsEnabled = true;
+  setMapDownloadButtons(true);
+  setMapStatus(`SDC map ready in ${formatDurationSeconds(result.runtime_seconds)}.`);
+}
+
+async function submitMapExplore() {
+  if (mapLoadBusy || mapRunBusy) {
+    return;
+  }
+  setWorkflowTab("map");
+  setMapLoadBusy(true);
+  mapDownloadsEnabled = false;
+  latestMapJobId = null;
+  latestMapResult = null;
+  resetMapPlotCanvas();
+  setMapDownloadButtons(false);
+  setMapStatus("Loading driver and gridded dataset...");
+  setMapProgress({
+    percent: 15,
+    label: "Loading datasets",
+    etaText: "Preparing exploration view...",
+  });
+  try {
+    const response = await fetch("/api/v1/sdc-map/explore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(getMapConfig()),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to load map exploration.");
+    }
+    latestMapExplore = data.result;
+    mapCellSeriesCache = new Map();
+    mapSelectedCell = pickInitialCell(latestMapExplore);
+    mapSelectedTimeIndex = Math.floor((latestMapExplore.time_index?.length || 1) / 2);
+    setMapPhase("explore");
+    await renderMapExploration(latestMapExplore);
+    renderMapSummary(latestMapExplore.summary, null);
+    setMapStatus("Exploration ready. Move the date slider and click grid cells.");
+    setMapProgress({
+      percent: 100,
+      label: "Exploration ready",
+      etaText: "Datasets are loaded in memory.",
+    });
+  } finally {
+    setMapLoadBusy(false);
+  }
+}
+
+async function pollMapJob(jobId) {
+  if (mapActivePoll) {
+    clearInterval(mapActivePoll);
+  }
+  mapDownloadsEnabled = false;
+  setMapDownloadButtons(false);
+  latestMapJobId = jobId;
+  mapRunStartedAt = Date.now();
+  setMapRunBusy(true);
+  updateMapProgress({ current: 0, total: 1, description: "Queued" }, "queued");
+  setMapStatus("Submitting map job...");
+
+  mapActivePoll = setInterval(async () => {
+    try {
+      const response = await fetch(`/api/v1/jobs/sdc-map/${jobId}`);
+      if (!response.ok) {
+        throw new Error(`Map status request failed (${response.status})`);
+      }
+
+      const status = await response.json();
+      updateMapProgress(status.progress || {}, status.status);
+      if (status.status === "queued" || status.status === "running") {
+        const progress = status.progress || {};
+        const description = progress.description ? String(progress.description) : "Running";
+        setMapStatus(`Running: ${description}`);
+      }
+
+      if (status.status === "succeeded") {
+        clearInterval(mapActivePoll);
+        mapActivePoll = null;
+        await fetchMapResult(jobId);
+        updateMapProgress(
+          status.progress || { current: 1, total: 1, description: "Completed" },
+          "succeeded"
+        );
+        setMapRunBusy(false);
+      } else if (status.status === "failed") {
+        clearInterval(mapActivePoll);
+        mapActivePoll = null;
+        updateMapProgress(
+          status.progress || { current: 0, total: 1, description: "Failed" },
+          "failed"
+        );
+        setMapStatus(status.error || "Map job failed.", true);
+        setMapRunBusy(false);
+      }
+    } catch (error) {
+      clearInterval(mapActivePoll);
+      mapActivePoll = null;
+      updateMapProgress({ current: 0, total: 1, description: "Failed" }, "failed");
+      setMapStatus(String(error), true);
+      setMapRunBusy(false);
+    }
+  }, 1400);
+}
+
+async function submitMapJob() {
+  if (mapRunBusy || mapLoadBusy) {
+    return;
+  }
+  if (!latestMapExplore) {
+    throw new Error("Load and explore driver + dataset first.");
+  }
+  setWorkflowTab("map");
+  const response = await fetch("/api/v1/jobs/sdc-map", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(getMapConfig()),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    setMapRunBusy(false);
+    throw new Error(data.detail || "Unable to submit SDC map job.");
+  }
+  await pollMapJob(data.job_id);
+}
+
+function invalidateMapPreparation() {
+  latestMapExplore = null;
+  refreshMapRunButtonState();
+  if (mapPhase === "explore") {
+    setMapStatus("Map settings changed. Reload driver + dataset to refresh exploration.");
+  } else if (mapPhase === "results") {
+    setMapStatus("Map settings changed. Reload driver + dataset before running again.");
+  }
+}
+
 function attachHandlers() {
   if (modeDatasetButton) {
     modeDatasetButton.addEventListener("click", () => setInputMode("dataset"));
   }
   if (modePasteButton) {
     modePasteButton.addEventListener("click", () => setInputMode("paste"));
+  }
+  if (workflowTabSdcButton) {
+    workflowTabSdcButton.addEventListener("click", () => setWorkflowTab("sdc"));
+  }
+  if (workflowTabMapButton) {
+    workflowTabMapButton.addEventListener("click", () => setWorkflowTab("map"));
   }
 
   document.getElementById("load_example").addEventListener("click", async () => {
@@ -1685,9 +2663,64 @@ function attachHandlers() {
   downloadXlsxButton.addEventListener("click", () => triggerDownload("xlsx"));
   downloadPngButton.addEventListener("click", () => triggerDownload("png"));
   downloadSvgButton.addEventListener("click", () => triggerDownload("svg"));
+  if (mapDownloadPngButton) {
+    mapDownloadPngButton.addEventListener("click", () => triggerMapDownload("png"));
+  }
+  if (mapDownloadNcButton) {
+    mapDownloadNcButton.addEventListener("click", () => triggerMapDownload("nc"));
+  }
+  if (mapLoadButton) {
+    mapLoadButton.addEventListener("click", async () => {
+      try {
+        await submitMapExplore();
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+    });
+  }
+  if (mapRunButton) {
+    mapRunButton.addEventListener("click", async () => {
+      try {
+        await submitMapJob();
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+    });
+  }
+  if (mapTimeSlider) {
+    mapTimeSlider.addEventListener("input", () => {
+      updateExploreFrame(Number(mapTimeSlider.value));
+    });
+  }
+
+  const mapConfigInputs = [
+    mapDriverDatasetInput,
+    mapFieldDatasetInput,
+    mapFragmentSizeInput,
+    mapAlphaInput,
+    mapTopFractionInput,
+    mapPermutationsInput,
+    mapMinLagInput,
+    mapMaxLagInput,
+    mapTimeStartInput,
+    mapTimeEndInput,
+    mapPeakDateInput,
+  ].filter(Boolean);
+  mapConfigInputs.forEach((input) => {
+    input.addEventListener("change", invalidateMapPreparation);
+  });
 
   window.addEventListener("resize", () => {
-    if (!latestResult) {
+    if (activeWorkflowTab === "map" && mapPhase === "results" && latestMapResult) {
+      if (mapResizeTimer) {
+        clearTimeout(mapResizeTimer);
+      }
+      mapResizeTimer = setTimeout(() => {
+        void renderActiveMapResultLayer();
+      }, 180);
+      return;
+    }
+    if (activeWorkflowTab !== "sdc" || !latestResult) {
       return;
     }
     if (explorerResizeTimer) {
@@ -1698,7 +2731,16 @@ function attachHandlers() {
 }
 
 setDownloadButtons(false);
+setMapDownloadButtons(false);
 setAnalysisSettingsUnlocked(false);
 setInputMode(activeInputMode);
+setWorkflowTab(activeWorkflowTab);
 syncPlotControlsFromSettings();
+setMapProgress();
+setMapPhase("idle");
+refreshMapRunButtonState();
+setMapStatus("Load datasets to start exploration, then run SDC map.");
+if (mapSelectedCellText) {
+  mapSelectedCellText.textContent = "Selected grid cell: none.";
+}
 attachHandlers();

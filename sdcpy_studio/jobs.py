@@ -10,8 +10,8 @@ from uuid import uuid4
 
 import pandas as pd
 
-from sdcpy_studio.schemas import SDCJobRequest
-from sdcpy_studio.service import run_sdc_job
+from sdcpy_studio.schemas import SDCJobRequest, SDCMapJobRequest
+from sdcpy_studio.service import run_sdc_job, run_sdc_map_job
 
 
 @dataclass
@@ -20,7 +20,7 @@ class JobRecord:
 
     job_id: str
     status: str
-    request: SDCJobRequest
+    request: SDCJobRequest | SDCMapJobRequest
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -53,6 +53,18 @@ class JobManager:
 
     def submit(self, request: SDCJobRequest) -> JobRecord:
         """Submit a new background computation."""
+        return self._submit_with_runner(request, run_sdc_job)
+
+    def submit_map(self, request: SDCMapJobRequest) -> JobRecord:
+        """Submit a new background computation for SDC map mode."""
+        return self._submit_with_runner(request, run_sdc_map_job)
+
+    def _submit_with_runner(
+        self,
+        request: SDCJobRequest | SDCMapJobRequest,
+        runner,
+    ) -> JobRecord:
+        """Submit a new background computation."""
         job_id = uuid4().hex
         created_at = datetime.now(timezone.utc)
         record = JobRecord(
@@ -67,6 +79,10 @@ class JobManager:
 
         with self._lock:
             self._jobs[job_id] = record
+            record.status = "running"
+            record.started_at = datetime.now(timezone.utc)
+            if record.progress_description.lower() == "queued":
+                record.progress_description = "Starting job"
 
         def _progress_update(current: int, total: int, description: str) -> None:
             with self._lock:
@@ -77,18 +93,9 @@ class JobManager:
                 rec.progress_total = int(max(1, total))
                 rec.progress_description = description
 
-        future = self._executor.submit(
-            run_sdc_job,
-            request.model_dump(mode="python"),
-            _progress_update,
-        )
+        future = self._executor.submit(runner, request.model_dump(mode="python"), _progress_update)
 
         with self._lock:
-            record.status = "running"
-            record.started_at = datetime.now(timezone.utc)
-            record.progress_current = 0
-            record.progress_total = 1
-            record.progress_description = "Running"
             self._futures[job_id] = future
 
         future.add_done_callback(lambda fut, jid=job_id: self._finalize(jid, fut))
@@ -106,7 +113,11 @@ class JobManager:
             except Exception as exc:  # pragma: no cover - exercised by API tests
                 record.status = "failed"
                 record.error = str(exc)
-                record.progress_description = "Failed"
+                if not record.progress_description or record.progress_description.lower() in {
+                    "queued",
+                    "running",
+                }:
+                    record.progress_description = "Failed"
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:

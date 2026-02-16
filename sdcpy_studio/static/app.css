@@ -301,6 +301,14 @@ textarea {
   background: #fff;
 }
 
+.workflow-tabs-card {
+  padding: 10px 12px;
+}
+
+.workflow-switch {
+  margin-bottom: 0;
+}
+
 .mode-btn {
   border: 0;
   border-right: 1px solid var(--line);
@@ -415,12 +423,38 @@ textarea {
   justify-content: center;
 }
 
+.map-stage {
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.map-results-shell {
+  width: min(100%, 1240px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.map-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .plot-controls {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
   align-items: stretch;
   margin-bottom: 8px;
+}
+
+.map-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .plot-controls label {
@@ -482,6 +516,10 @@ textarea {
   gap: 8px;
 }
 
+.map-download-grid {
+  grid-template-columns: 1fr;
+}
+
 .download-tile {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -522,6 +560,149 @@ textarea {
 .explorer-stage .plot-large {
   width: min(100%, 1080px);
   min-height: 430px;
+}
+
+.map-plot {
+  width: 100%;
+  min-height: 560px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.map-phase-badge {
+  width: min(100%, 1240px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.map-explore-controls {
+  width: min(100%, 1240px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.map-explore-controls label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.map-explore-controls output {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.map-result-tabs {
+  width: min(100%, 1240px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fbfe;
+}
+
+.map-tab-btn {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: #1f2a37;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.map-tab-btn:hover {
+  border-color: #89b6d4;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px #0b203812;
+}
+
+.map-tab-btn.is-active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #0a7f5a, #0077b6);
+  box-shadow: 0 10px 20px #0b203826;
+}
+
+.map-selected-cell {
+  width: min(100%, 1240px);
+  margin: 0;
+}
+
+.map-downloads-side {
+  margin-top: 0;
+  height: 100%;
+}
+
+.map-image {
+  width: min(100%, 1040px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  display: none;
+}
+
+.map-image.is-ready {
+  display: block;
+}
+
+.summary-grid-map {
+  width: min(100%, 1240px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.map-progress {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 9px 10px;
+}
+
+.map-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.map-progress-track {
+  margin-top: 7px;
+  height: 9px;
+  border-radius: 999px;
+  background: #e6edf5;
+  overflow: hidden;
+}
+
+.map-progress-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #0a7f5a, #0077b6);
+  transition: width 0.28s ease;
+}
+
+.map-progress-eta {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
 }
 
 .summary-grid {
@@ -663,6 +844,14 @@ th {
   .explorer-shell {
     grid-template-columns: 240px minmax(0, 1fr);
   }
+
+  .workflow-map .explorer-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workflow-map .map-controls-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 899px) {
@@ -720,7 +909,24 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .map-controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .map-action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .map-explore-controls {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .download-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .map-results-shell {
     grid-template-columns: 1fr;
   }
 }
