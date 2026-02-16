@@ -924,17 +924,35 @@ def get_sdc_map_catalog() -> dict:
             "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
         ) from exc
 
-    def _safe_driver_coverage(key: str) -> dict[str, object]:
-        try:
-            return _get_driver_data_coverage(key)
-        except Exception:
-            return {}
+    coverage_mode = os.getenv("SDCPY_STUDIO_MAP_CATALOG_COVERAGE", "cached").strip().lower()
+    # Modes:
+    # - none: no coverage fields in catalog payload (fastest)
+    # - cached: include only already-computed in-memory coverage (default)
+    # - eager: compute coverage for every driver/field (can be slow/network-heavy)
+    include_cached = coverage_mode in {"cached", "eager"}
+    include_eager = coverage_mode == "eager"
 
-    def _safe_field_coverage(key: str) -> dict[str, object]:
-        try:
-            return _get_field_data_coverage(key)
-        except Exception:
-            return {}
+    def _driver_coverage(key: str) -> dict[str, object]:
+        if include_eager:
+            try:
+                return _get_driver_data_coverage(key)
+            except Exception:
+                return {}
+        if include_cached:
+            with _DRIVER_COVERAGE_CACHE_LOCK:
+                return dict(_DRIVER_COVERAGE_CACHE.get(key, {}))
+        return {}
+
+    def _field_coverage(key: str) -> dict[str, object]:
+        if include_eager:
+            try:
+                return _get_field_data_coverage(key)
+            except Exception:
+                return {}
+        if include_cached:
+            with _FIELD_COVERAGE_CACHE_LOCK:
+                return dict(_FIELD_COVERAGE_CACHE.get(key, {}))
+        return {}
 
     drivers = [
         (
@@ -942,7 +960,7 @@ def get_sdc_map_catalog() -> dict:
                 "key": key,
                 "description": str(getattr(spec, "description", "")),
             }
-            | _safe_driver_coverage(key)
+            | _driver_coverage(key)
         )
         for key, spec in sorted(DRIVER_DATASETS.items())
     ]
@@ -953,7 +971,7 @@ def get_sdc_map_catalog() -> dict:
                 "description": str(getattr(spec, "description", "")),
                 "variable": str(getattr(spec, "variable", "")),
             }
-            | _safe_field_coverage(key)
+            | _field_coverage(key)
         )
         for key, spec in sorted(FIELD_DATASETS.items())
     ]

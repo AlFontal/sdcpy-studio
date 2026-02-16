@@ -729,6 +729,15 @@ function renderMapSelectorOptions() {
 }
 
 function renderMapSelectorMetadata() {
+  if (!mapDatasetCatalog) {
+    if (mapDriverDatasetMeta) {
+      mapDriverDatasetMeta.textContent = "Driver metadata unavailable right now.";
+    }
+    if (mapFieldDatasetMeta) {
+      mapFieldDatasetMeta.textContent = "Field metadata unavailable right now.";
+    }
+    return;
+  }
   const { driver, field } = getSelectedMapDatasets();
   if (mapDriverDatasetMeta) {
     if (!driver) {
@@ -775,8 +784,14 @@ function renderMapDatasetDocs() {
 }
 
 async function fetchMapCatalog() {
+  const timeoutMs = 12000;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timeoutId = null;
+  if (controller) {
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  }
   try {
-    const response = await fetch("/api/v1/sdc-map/catalog");
+    const response = await fetch("/api/v1/sdc-map/catalog", controller ? { signal: controller.signal } : {});
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.detail || "Unable to fetch map dataset catalog.");
@@ -784,6 +799,10 @@ async function fetchMapCatalog() {
     mapDatasetCatalog = data;
   } catch (_error) {
     mapDatasetCatalog = null;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
   renderMapSelectorOptions();
   renderMapSelectorMetadata();
