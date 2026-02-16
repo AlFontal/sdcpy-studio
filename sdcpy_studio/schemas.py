@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-MAX_SERIES_LENGTH = 2000
 MIN_SERIES_LENGTH = 20
 
 
@@ -39,10 +38,6 @@ class SDCJobRequest(BaseModel):
             raise ValueError("`ts1` and `ts2` must have the same length.")
         if len(self.ts1) < MIN_SERIES_LENGTH:
             raise ValueError(f"Each series must have at least {MIN_SERIES_LENGTH} points.")
-        if len(self.ts1) > MAX_SERIES_LENGTH:
-            raise ValueError(
-                f"Series are too long for interactive mode (max {MAX_SERIES_LENGTH} points)."
-            )
         if self.fragment_size >= len(self.ts1):
             raise ValueError("`fragment_size` must be smaller than the series length.")
         if self.min_lag > self.max_lag:

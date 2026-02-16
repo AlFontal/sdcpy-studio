@@ -7,6 +7,7 @@ import io
 import os
 import re
 from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
@@ -64,6 +65,14 @@ def _sanitize_filename_token(value: str, fallback: str) -> str:
     if not cleaned:
         return fallback
     return cleaned.lower()[:64]
+
+
+def _read_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return bool(default)
+    normalized = raw_value.strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _emit_progress(
@@ -615,21 +624,50 @@ def fetch_sdc_map_assets(
     driver_url = _canonical_psl_download_url(driver_spec.url)
     field_url = _canonical_psl_download_url(field_spec.url)
     coastline_url = _canonical_psl_download_url(COASTLINE_URL)
+    refresh = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_REFRESH", default=False)
+    verify_remote = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_VERIFY_REMOTE", default=False)
+    offline = _read_bool_env("SDCPY_STUDIO_SDCPY_MAP_OFFLINE", default=False)
+
+    if offline and refresh:
+        raise ValueError(
+            "Invalid cache policy: SDCPY_STUDIO_SDCPY_MAP_OFFLINE=1 cannot be combined with "
+            "SDCPY_STUDIO_SDCPY_MAP_REFRESH=1."
+        )
+
+    def _resolve_asset(url: str, destination: Path) -> Path:
+        kwargs = {
+            "refresh": refresh,
+            "verify_remote": verify_remote,
+            "offline": offline,
+        }
+        try:
+            return download_if_missing(url, destination, **kwargs)
+        except TypeError:
+            # Backward compatibility with older sdcpy-map versions.
+            if destination.exists() and destination.stat().st_size > 0 and not refresh and not verify_remote:
+                return destination
+            if refresh and destination.exists():
+                destination.unlink()
+            if offline and not destination.exists():
+                raise ValueError(
+                    f"Offline mode is enabled and required dataset is missing: {destination.name}"
+                ) from None
+            return download_if_missing(url, destination)
 
     out: dict[str, Path] = {}
     _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})")
-    out["driver"] = download_if_missing(
+    out["driver"] = _resolve_asset(
         driver_url,
         data_dir / _map_asset_filename("driver", driver_key, driver_url),
     )
     _emit_progress(progress_hook, progress_start + 1, progress_total, f"Ensuring field dataset ({field_key})")
-    out["field"] = download_if_missing(
+    out["field"] = _resolve_asset(
         field_url,
         data_dir / _map_asset_filename("field", field_key, field_url),
     )
     if include_coastline:
         _emit_progress(progress_hook, progress_start + 2, progress_total, "Ensuring coastline dataset")
-        out["coastline"] = download_if_missing(
+        out["coastline"] = _resolve_asset(
             coastline_url,
             data_dir / _map_asset_filename("coastline", "ne_110m", coastline_url),
         )
@@ -769,6 +807,7 @@ def run_sdc_map_job(
     progress_hook: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Run a beta SDC map job and return a compact JSON-friendly payload."""
+    os.environ.setdefault("TQDM_DISABLE", "1")
     request = SDCMapJobRequest.model_validate(payload)
     try:
         import matplotlib
@@ -865,7 +904,8 @@ def run_sdc_map_job(
     driver = align_driver_to_field(driver, mapped_field)
 
     _emit_progress(progress_hook, 5, total_steps, "Computing map layers")
-    layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
     lats, lons = grid_coordinates(mapped_field)
 
     _emit_progress(progress_hook, 6, total_steps, "Rendering map figure")

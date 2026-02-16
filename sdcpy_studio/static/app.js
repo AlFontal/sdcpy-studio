@@ -1,6 +1,10 @@
 const statusText = document.getElementById("status_text");
 const statusError = document.getElementById("status_error");
 const statusCard = document.getElementById("status_card");
+const statusProgressLabel = document.getElementById("status_progress_label");
+const statusProgressValue = document.getElementById("status_progress_value");
+const statusProgressTrack = document.getElementById("status_progress_track");
+const statusProgressFill = document.getElementById("status_progress_fill");
 
 const summaryStats = document.getElementById("summary_stats");
 const summaryNotes = document.getElementById("summary_notes");
@@ -9,6 +13,7 @@ const explorerDetails = document.getElementById("explorer_details");
 
 const fragmentSizeInput = document.getElementById("fragment_size");
 const heatmapStepInput = document.getElementById("heatmap_step");
+const heatmapStepNotice = document.getElementById("heatmap_step_notice");
 const plotFragmentInput = document.getElementById("plot_fragment_size");
 const plotAlphaInput = document.getElementById("plot_alpha");
 const plotAlphaValue = document.getElementById("plot_alpha_value");
@@ -83,6 +88,8 @@ let datasetInspectToken = 0;
 let analysisSettingsUnlocked = false;
 let activeInputMode = "dataset";
 let statusHideTimer = null;
+let analysisRunStartedAt = 0;
+let analysisProgressPeak = 0;
 let hasExpandedExplorerAfterFirstRun = false;
 let explorerResizeTimer = null;
 let mapResizeTimer = null;
@@ -100,6 +107,8 @@ let mapSelectedCell = null;
 let mapActiveTab = 0;
 let mapCellSeriesCache = new Map();
 let mapDownloadsEnabled = false;
+let heatmapStepManuallyOverridden = false;
+let latestValidatedSeriesLength = 0;
 
 const RD_BU_WHITE_CENTER = [
   [0.0, "#053061"],
@@ -112,6 +121,9 @@ const RD_BU_WHITE_CENTER = [
   [0.875, "#b2182b"],
   [1.0, "#67001f"],
 ];
+
+const ADAPTIVE_HEATMAP_BASE_LENGTH = 2000;
+const MIN_ANALYSIS_SERIES_LENGTH = 20;
 
 function getConfig() {
   return {
@@ -169,6 +181,84 @@ function applyRecommendedFragmentSize(seriesLength) {
   if (plotFragmentInput) {
     plotFragmentInput.value = String(next);
   }
+}
+
+function recommendedHeatmapStep(seriesLength) {
+  const n = Math.max(0, Math.floor(Number(seriesLength) || 0));
+  if (n <= ADAPTIVE_HEATMAP_BASE_LENGTH) {
+    return 1;
+  }
+
+  let threshold = ADAPTIVE_HEATMAP_BASE_LENGTH;
+  let nextStep = 1;
+  while (n > threshold) {
+    threshold *= 2;
+    nextStep *= 2;
+  }
+  return Math.max(1, nextStep);
+}
+
+function formatCompactCount(value) {
+  const n = Math.max(0, Math.round(Number(value) || 0));
+  if (n >= 1_000_000_000) {
+    return `${(n / 1_000_000_000).toFixed(2).replace(/\.00$/, "")}B`;
+  }
+  if (n >= 1_000_000) {
+    return `${(n / 1_000_000).toFixed(2).replace(/\.00$/, "")}M`;
+  }
+  if (n >= 1_000) {
+    return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return String(n);
+}
+
+function updateHeatmapStepNotice({
+  seriesLength = latestValidatedSeriesLength,
+  autoApplied = false,
+} = {}) {
+  if (!heatmapStepNotice) {
+    return;
+  }
+  const n = Math.max(0, Math.floor(Number(seriesLength) || 0));
+  if (n <= ADAPTIVE_HEATMAP_BASE_LENGTH || n < MIN_ANALYSIS_SERIES_LENGTH) {
+    heatmapStepNotice.hidden = true;
+    return;
+  }
+
+  heatmapStepNotice.hidden = false;
+  const recommendedStep = recommendedHeatmapStep(n);
+  if (autoApplied) {
+    heatmapStepNotice.textContent = `Large series detected (${formatCompactCount(n)} points). Heatmap step was auto-set to ${recommendedStep}. Reduce heatmap step at your own risk.`;
+    return;
+  }
+  heatmapStepNotice.textContent = `Large series detected (${formatCompactCount(n)} points). Recommended heatmap step: ${recommendedStep}. Reduce heatmap step at your own risk, browser might crash.`;
+}
+
+function applyAdaptiveHeatmapStep(seriesLength, { resetManualOverride = false } = {}) {
+  const n = Math.max(0, Math.floor(Number(seriesLength) || 0));
+  latestValidatedSeriesLength = n;
+  if (resetManualOverride) {
+    heatmapStepManuallyOverridden = false;
+  }
+
+  const recommendedStep = recommendedHeatmapStep(n);
+  const currentStep = Math.max(1, Math.round(Number(heatmapStepInput?.value) || 1));
+
+  let autoApplied = false;
+  if (!heatmapStepManuallyOverridden && currentStep !== recommendedStep) {
+    heatmapStepInput.value = String(recommendedStep);
+    if (plotHeatmapStepInput) {
+      plotHeatmapStepInput.value = String(recommendedStep);
+    }
+    autoApplied = true;
+  }
+
+  updateHeatmapStepNotice({ seriesLength: n, autoApplied });
+}
+
+function applyAdaptiveDefaultsForSeries(seriesLength, { resetManualOverride = false } = {}) {
+  applyRecommendedFragmentSize(seriesLength);
+  applyAdaptiveHeatmapStep(seriesLength, { resetManualOverride });
 }
 
 function parseSeries(rawText) {
@@ -270,7 +360,24 @@ function setStatusError(message) {
   if (statusError) {
     statusError.textContent = String(message);
   }
+  setStatusProgress({ percent: analysisProgressPeak, label: "Failed" });
   setStatus("Analysis failed.", true);
+}
+
+function setStatusProgress({ percent = 0, label = "Idle" } = {}) {
+  const clampedPercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  if (statusProgressLabel) {
+    statusProgressLabel.textContent = label;
+  }
+  if (statusProgressValue) {
+    statusProgressValue.textContent = `${clampedPercent}%`;
+  }
+  if (statusProgressFill) {
+    statusProgressFill.style.width = `${clampedPercent}%`;
+  }
+  if (statusProgressTrack) {
+    statusProgressTrack.setAttribute("aria-valuenow", String(clampedPercent));
+  }
 }
 
 function setDownloadButtons(enabled) {
@@ -385,8 +492,44 @@ function getMapConfig() {
 }
 
 function updateProgress(progress, status) {
-  void progress;
-  void status;
+  const normalizedStatus = String(status || "").toLowerCase();
+  const rawCurrent = Math.max(0, Number(progress?.current) || 0);
+  const total = Math.max(1, Number(progress?.total) || 1);
+  const current = normalizedStatus === "succeeded" ? total : Math.min(rawCurrent, total);
+  const description = progress?.description ? String(progress.description) : "Running";
+
+  let percent = 0;
+  if (normalizedStatus === "succeeded") {
+    percent = 100;
+  } else if (normalizedStatus === "failed") {
+    percent = (current / total) * 100;
+  } else if (normalizedStatus === "running") {
+    percent = (current / total) * 100;
+  }
+
+  if (normalizedStatus === "queued") {
+    analysisProgressPeak = 0;
+  } else if (normalizedStatus === "running") {
+    analysisProgressPeak = Math.max(analysisProgressPeak, percent);
+    percent = analysisProgressPeak;
+  }
+
+  const stepLabel = total > 1 ? `Step ${Math.min(current, total)}/${total}` : "Step 1/1";
+  let label = description;
+  if (normalizedStatus === "queued") {
+    label = "Queued";
+  } else if (normalizedStatus === "running") {
+    label = `${stepLabel}: ${description}`;
+  } else if (normalizedStatus === "succeeded") {
+    const elapsedSeconds = analysisRunStartedAt
+      ? Math.max(0, (Date.now() - analysisRunStartedAt) / 1000)
+      : 0;
+    label = elapsedSeconds ? `Completed in ${formatDurationSeconds(elapsedSeconds)}` : "Completed";
+  } else if (normalizedStatus === "failed") {
+    label = description && description.toLowerCase() !== "failed" ? `Failed: ${description}` : "Failed";
+  }
+
+  setStatusProgress({ percent, label });
 }
 
 function formatDurationSeconds(totalSeconds) {
@@ -542,6 +685,11 @@ async function applyPlotControls() {
 
   fragmentSizeInput.value = String(nextFragment);
   heatmapStepInput.value = String(nextHeatmapStep);
+  if (nextHeatmapStep !== currentHeatmapStep) {
+    heatmapStepManuallyOverridden = true;
+  }
+  syncPlotControlsFromSettings();
+  updateHeatmapStepNotice();
   if (!latestResult) {
     setStatus("Plot settings updated. Run analysis to apply.");
     return;
@@ -701,8 +849,12 @@ function setInputMode(mode) {
   }
   updateDatasetRunAvailability();
   if (usePasteMode) {
-    getPasteSeriesValidation({ updateMessage: true });
+    const validation = getPasteSeriesValidation({ updateMessage: true });
+    if (validation.valid) {
+      applyAdaptiveHeatmapStep(validation.ts1.length);
+    }
   }
+  updateHeatmapStepNotice();
 }
 
 function renderTwoWayExplorer(result) {
@@ -1517,6 +1669,9 @@ function updateDatasetRunAvailability() {
 
   if (activeInputMode === "paste") {
     submitDatasetButton.disabled = !pasteReady;
+    if (pasteReady && analysisSettingsDetails) {
+      analysisSettingsDetails.open = true;
+    }
     return;
   }
 
@@ -1566,7 +1721,7 @@ function applyDatasetInspection(
     datasetTs2Select.value = preferredTs2Column;
   }
 
-  applyRecommendedFragmentSize(data.n_rows);
+  applyAdaptiveDefaultsForSeries(data.n_rows, { resetManualOverride: true });
   renderDatasetPreview(data.columns, data.preview_rows, { collapse: collapsePreview });
   updateDatasetRunAvailability();
   if (analysisSettingsDetails && analysisSettingsUnlocked) {
@@ -1686,8 +1841,12 @@ async function fetchResult(jobId) {
   latestResult = result;
   latestJobId = jobId;
   fragmentSizeInput.value = String(result.summary.fragment_size ?? fragmentSizeInput.value);
+  if (Number.isFinite(Number(result?.summary?.series_length))) {
+    latestValidatedSeriesLength = Math.max(0, Math.floor(Number(result.summary.series_length)));
+  }
   expandExplorerAfterFirstSuccessfulRun();
   syncPlotControlsFromSettings();
+  updateHeatmapStepNotice();
 
   renderSummary(result.summary, result.notes, result.runtime_seconds);
   renderTwoWayExplorer(result);
@@ -1701,7 +1860,10 @@ async function pollJob(jobId) {
 
   setDownloadButtons(false);
   latestJobId = jobId;
+  analysisRunStartedAt = Date.now();
+  analysisProgressPeak = 0;
   setStatus("Running analysis...");
+  setStatusProgress({ percent: 0, label: "Queued" });
 
   activePoll = setInterval(async () => {
     try {
@@ -1736,6 +1898,7 @@ async function submitFromText() {
   if (!validation.valid) {
     throw new Error("Please fix pasted series before running analysis.");
   }
+  applyAdaptiveHeatmapStep(validation.ts1.length);
 
   const payload = {
     ...getConfig(),
@@ -1774,7 +1937,7 @@ async function loadExample() {
   if (ts2NameInput && !ts2NameInput.value.trim()) {
     ts2NameInput.value = "TS2";
   }
-  applyRecommendedFragmentSize(data.ts1.length);
+  applyAdaptiveDefaultsForSeries(data.ts1.length, { resetManualOverride: true });
   getPasteSeriesValidation({ updateMessage: true });
   updateDatasetRunAvailability();
   setStatus("Loaded synthetic example. You can run it directly.");
@@ -2586,7 +2749,12 @@ function attachHandlers() {
       clearTimeout(pasteValidationTimer);
     }
     pasteValidationTimer = setTimeout(() => {
-      getPasteSeriesValidation({ updateMessage: activeInputMode === "paste" });
+      const validation = getPasteSeriesValidation({ updateMessage: activeInputMode === "paste" });
+      if (validation.valid) {
+        applyAdaptiveHeatmapStep(validation.ts1.length);
+      } else {
+        updateHeatmapStepNotice();
+      }
       updateDatasetRunAvailability();
     }, 140);
   };
@@ -2604,8 +2772,15 @@ function attachHandlers() {
     ts2NameInput.addEventListener("input", schedulePasteValidation);
   }
 
-  fragmentSizeInput.addEventListener("input", syncPlotControlsFromSettings);
-  heatmapStepInput.addEventListener("input", syncPlotControlsFromSettings);
+  fragmentSizeInput.addEventListener("input", () => {
+    syncPlotControlsFromSettings();
+    updateHeatmapStepNotice();
+  });
+  heatmapStepInput.addEventListener("input", () => {
+    heatmapStepManuallyOverridden = true;
+    syncPlotControlsFromSettings();
+    updateHeatmapStepNotice();
+  });
 
   if (plotAlphaInput) {
     plotAlphaInput.addEventListener("input", () => {
@@ -2647,6 +2822,10 @@ function attachHandlers() {
   }
 
   if (plotHeatmapStepInput) {
+    plotHeatmapStepInput.addEventListener("input", () => {
+      heatmapStepManuallyOverridden = true;
+      updateHeatmapStepNotice();
+    });
     plotHeatmapStepInput.addEventListener("keydown", async (event) => {
       if (event.key !== "Enter") {
         return;
@@ -2731,11 +2910,13 @@ function attachHandlers() {
 }
 
 setDownloadButtons(false);
+setStatusProgress();
 setMapDownloadButtons(false);
 setAnalysisSettingsUnlocked(false);
 setInputMode(activeInputMode);
 setWorkflowTab(activeWorkflowTab);
 syncPlotControlsFromSettings();
+updateHeatmapStepNotice();
 setMapProgress();
 setMapPhase("idle");
 refreshMapRunButtonState();
