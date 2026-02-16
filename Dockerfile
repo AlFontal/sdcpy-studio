@@ -1,7 +1,10 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
 ARG INSTALL_MAP_DEPS=1
 
@@ -11,14 +14,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md /app/
-COPY sdcpy_studio /app/sdcpy_studio
+COPY --from=ghcr.io/astral-sh/uv:0.5.26 /uv /uvx /bin/
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && if [ "$INSTALL_MAP_DEPS" = "1" ]; then \
-        pip install --no-cache-dir ".[map]"; \
+COPY pyproject.toml uv.lock README.md /app/
+COPY sdcpy_studio /app/sdcpy_studio
+COPY scripts /app/scripts
+
+RUN if [ "$INSTALL_MAP_DEPS" = "1" ]; then \
+        uv sync --frozen --no-dev --extra map; \
       else \
-        pip install --no-cache-dir .; \
+        uv sync --frozen --no-dev; \
       fi
 
 EXPOSE 8000
