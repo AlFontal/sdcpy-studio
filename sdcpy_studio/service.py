@@ -24,6 +24,8 @@ from sdcpy_studio.schemas import SDCJobFromDatasetRequest, SDCJobRequest, SDCMap
 MAX_STRONGEST_LINKS = 100
 _MAP_DATA_PATH_CACHE: dict[tuple[str, str, str], dict[str, Path]] = {}
 _MAP_DATA_PATH_CACHE_LOCK = Lock()
+_FIELD_BOUNDS_CACHE: dict[str, dict[str, float]] = {}
+_FIELD_BOUNDS_CACHE_LOCK = Lock()
 _RD_BU_WHITE_CENTER: tuple[tuple[float, str], ...] = (
     (0.0, "#053061"),
     (0.125, "#2166ac"),
@@ -675,6 +677,64 @@ def fetch_sdc_map_assets(
     return out
 
 
+def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[str, float]:
+    """Compute the geographic bounds of a field dataset without constraints.
+    
+    Returns a dictionary with keys: lat_min, lat_max, lon_min, lon_max
+    """
+    with _FIELD_BOUNDS_CACHE_LOCK:
+        if field_key in _FIELD_BOUNDS_CACHE:
+            return _FIELD_BOUNDS_CACHE[field_key]
+    
+    try:
+        from sdcpy_map import SDCMapConfig, grid_coordinates, load_field_anomaly_subset
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+    
+    if data_dir is None:
+        data_dir = Path(
+            os.getenv(
+                "SDCPY_STUDIO_SDCPY_MAP_DATA_DIR",
+                str(Path.home() / ".cache" / "sdcpy-studio" / "sdcpy-map"),
+            )
+        )
+    
+    # Fetch the field dataset
+    paths = fetch_sdc_map_assets(
+        data_dir=data_dir,
+        driver_key="pdo",  # Dummy driver; only fetching field
+        field_key=field_key,
+        include_coastline=False,
+    )
+    
+    # Load field with completely unconstrained bounds
+    config = SDCMapConfig(
+        lat_min=-90, lat_max=90,
+        lon_min=-180, lon_max=180,
+        lat_stride=1, lon_stride=1,
+    )
+    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=field_key)
+    lats, lons = grid_coordinates(mapped_field)
+    
+    # Compute actual data extent
+    lat_array = np.asarray(lats, dtype=float)
+    lon_array = np.asarray(lons, dtype=float)
+    bounds = {
+        "lat_min": float(np.nanmin(lat_array)),
+        "lat_max": float(np.nanmax(lat_array)),
+        "lon_min": float(np.nanmin(lon_array)),
+        "lon_max": float(np.nanmax(lon_array)),
+    }
+    
+    with _FIELD_BOUNDS_CACHE_LOCK:
+        _FIELD_BOUNDS_CACHE[field_key] = bounds
+    
+    return bounds
+
+
+
 def build_sdc_map_exploration(payload: dict) -> dict:
     """Load map datasets and return exploration-ready arrays for interactive UI."""
     request = SDCMapJobRequest.model_validate(payload)
@@ -692,6 +752,20 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
         ) from exc
 
+    # Compute dynamic bounds if using hardcoded defaults
+    lat_min = request.lat_min
+    lat_max = request.lat_max
+    lon_min = request.lon_min
+    lon_max = request.lon_max
+    
+    # Check if bounds are the old hardcoded defaults
+    if (lat_min, lat_max, lon_min, lon_max) == (20, 70, -160, -60):
+        field_bounds = _get_field_data_bounds(request.field_dataset)
+        lat_min = field_bounds["lat_min"]
+        lat_max = field_bounds["lat_max"]
+        lon_min = field_bounds["lon_min"]
+        lon_max = field_bounds["lon_max"]
+
     config = SDCMapConfig(
         fragment_size=request.fragment_size,
         n_permutations=request.n_permutations,
@@ -703,10 +777,10 @@ def build_sdc_map_exploration(payload: dict) -> dict:
         peak_date=request.peak_date,
         time_start=request.time_start,
         time_end=request.time_end,
-        lat_min=request.lat_min,
-        lat_max=request.lat_max,
-        lon_min=request.lon_min,
-        lon_max=request.lon_max,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
         lat_stride=request.lat_stride,
         lon_stride=request.lon_stride,
     )
@@ -792,6 +866,10 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             "field_lon_max": field_lon_max,
             "field_value_min": field_value_min,
             "field_value_max": field_value_max,
+            "used_lat_min": lat_min,
+            "used_lat_max": lat_max,
+            "used_lon_min": lon_min,
+            "used_lon_max": lon_max,
         },
         "time_index": [ts.strftime("%Y-%m-%d") for ts in time_index],
         "driver_values": _serialize_optional_array(driver_values),
@@ -833,6 +911,20 @@ def run_sdc_map_job(
             "SDC Map dependencies are unavailable. Install optional dependencies with `pip install .[map]`."
         ) from exc
 
+    # Compute dynamic bounds if using hardcoded defaults
+    lat_min = request.lat_min
+    lat_max = request.lat_max
+    lon_min = request.lon_min
+    lon_max = request.lon_max
+    
+    # Check if bounds are the old hardcoded defaults
+    if (lat_min, lat_max, lon_min, lon_max) == (20, 70, -160, -60):
+        field_bounds = _get_field_data_bounds(request.field_dataset)
+        lat_min = field_bounds["lat_min"]
+        lat_max = field_bounds["lat_max"]
+        lon_min = field_bounds["lon_min"]
+        lon_max = field_bounds["lon_max"]
+
     total_steps = 8
     _emit_progress(progress_hook, 0, total_steps, "Preparing SDC map inputs")
     config = SDCMapConfig(
@@ -846,10 +938,10 @@ def run_sdc_map_job(
         peak_date=request.peak_date,
         time_start=request.time_start,
         time_end=request.time_end,
-        lat_min=request.lat_min,
-        lat_max=request.lat_max,
-        lon_min=request.lon_min,
-        lon_max=request.lon_max,
+        lat_min=lat_min,
+        lat_max=lat_max,
+        lon_min=lon_min,
+        lon_max=lon_max,
         lat_stride=request.lat_stride,
         lon_stride=request.lon_stride,
     )
@@ -902,14 +994,38 @@ def run_sdc_map_job(
     driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
     mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
     driver = align_driver_to_field(driver, mapped_field)
+    lats, lons = grid_coordinates(mapped_field)
+    
+    # Compute total grid cells for progress reporting
+    n_lat = len(lats)
+    n_lon = len(lons)
+    total_cells = n_lat * n_lon if n_lat > 0 and n_lon > 0 else 1
 
-    _emit_progress(progress_hook, 5, total_steps, "Computing map layers")
+    _emit_progress(progress_hook, 5, total_steps, f"Computing SDC map (0/{total_cells} cells)")
+    
+    # Capture layer computation progress
+    cells_computed = 0
+    
+    def progress_callback(current_cell: int = 0):
+        """Callback for tracking SDC computation progress."""
+        nonlocal cells_computed
+        cells_computed = current_cell
+        # Map 0.0-0.8 of step 5 to cell computation progress
+        progress_value = 5 + (cells_computed / total_cells * 0.8) if total_cells > 0 else 5
+        _emit_progress(
+            progress_hook,
+            int(progress_value),
+            total_steps,
+            f"Computing SDC map ({cells_computed}/{total_cells} cells)"
+        )
+    
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         layers = compute_sdcmap_layers(driver=driver, mapped_field=mapped_field, config=config)
-    lats, lons = grid_coordinates(mapped_field)
+    
+    progress_callback(total_cells)  # Mark as complete
+    coastline = load_coastline(paths["coastline"])
 
     _emit_progress(progress_hook, 6, total_steps, "Rendering map figure")
-    coastline = load_coastline(paths["coastline"])
     fig, *_ = plot_layer_maps_compact(
         layers=layers,
         lats=lats,
@@ -948,7 +1064,7 @@ def run_sdc_map_job(
     runtime_seconds = perf_counter() - started
     corr_mean = np.asarray(layers["corr_mean"], dtype=float)
     dominant_sign = np.asarray(layers["dominant_sign"], dtype=float)
-    total_cells = int(corr_mean.size)
+    total_cells_result = int(corr_mean.size)
     valid_cells = int(np.isfinite(corr_mean).sum())
     field_lat_min: float | None = None
     field_lat_max: float | None = None
@@ -997,17 +1113,18 @@ def run_sdc_map_job(
             "top_fraction": float(request.top_fraction),
             "min_lag": int(request.min_lag),
             "max_lag": int(request.max_lag),
-            "lat_min": float(request.lat_min),
-            "lat_max": float(request.lat_max),
-            "lon_min": float(request.lon_min),
-            "lon_max": float(request.lon_max),
+            "lat_min": float(lat_min),
+            "lat_max": float(lat_max),
+            "lon_min": float(lon_min),
+            "lon_max": float(lon_max),
             "lat_stride": int(request.lat_stride),
             "lon_stride": int(request.lon_stride),
             "n_time": int(mapped_field.sizes.get("time", 0)),
             "n_lat": int(mapped_field.sizes.get("lat", 0)),
             "n_lon": int(mapped_field.sizes.get("lon", 0)),
+            "total_cells": total_cells_result,
             "valid_cells": valid_cells,
-            "valid_cell_rate": float(valid_cells / total_cells) if total_cells else 0.0,
+            "valid_cell_rate": float(valid_cells / total_cells_result) if total_cells_result else 0.0,
             "field_lat_min": field_lat_min,
             "field_lat_max": field_lat_max,
             "field_lon_min": field_lon_min,
