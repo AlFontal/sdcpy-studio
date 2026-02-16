@@ -280,6 +280,17 @@ textarea {
   color: var(--accent);
 }
 
+.heatmap-step-alert {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #f7c79f;
+  border-radius: 10px;
+  background: #fff4e8;
+  color: #8a3c10;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
 .split {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -386,10 +397,8 @@ textarea {
 }
 
 .status-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  gap: 8px;
   padding: 10px 14px;
 }
 
@@ -400,6 +409,35 @@ textarea {
 .status-banner #status_text {
   margin: 0;
   font-size: 0.84rem;
+}
+
+.status-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.status-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.status-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e6edf5;
+  overflow: hidden;
+}
+
+.status-progress-fill {
+  display: block;
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, #0a7f5a, #0077b6);
+  transition: width 0.24s ease;
 }
 
 .status-banner #status_error {

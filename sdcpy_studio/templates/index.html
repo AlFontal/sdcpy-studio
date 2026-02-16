@@ -217,6 +217,9 @@
               <input id="permutations" type="checkbox" checked />
             </label>
           </div>
+          <p id="heatmap_step_notice" data-testid="heatmap-step-notice" class="heatmap-step-alert" hidden>
+            Reduce heatmap step at your own risk.
+          </p>
         </details>
         <div class="actions settings-run-actions">
           <button id="submit_dataset" data-testid="dataset-run-button" class="btn" disabled>Run analysis</button>
@@ -225,6 +228,23 @@
 
       <article class="card span-12 status-banner hidden workflow-sdc" id="status_card" data-testid="status-card">
         <p id="status_text" data-testid="status-text"></p>
+        <section class="status-progress" aria-label="Analysis progress">
+          <div class="status-progress-meta">
+            <span id="status_progress_label">Idle</span>
+            <span id="status_progress_value">0%</span>
+          </div>
+          <div
+            id="status_progress_track"
+            class="status-progress-track"
+            role="progressbar"
+            aria-label="SDC analysis progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <span id="status_progress_fill" class="status-progress-fill"></span>
+          </div>
+        </section>
         <p id="status_error" class="error"></p>
       </article>
 
