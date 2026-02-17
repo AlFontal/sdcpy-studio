@@ -15,6 +15,9 @@ It offers two workflows:
 ### Home and main workflow
 ![sdcpy-studio home](docs/images/studio-home.png)
 
+### 2-Way Explorer (ONI example after run)
+![sdcpy-studio 2-way explorer ONI run](docs/images/studio-two-way-oni.png)
+
 ### SDC Map exploration
 ![sdcpy-studio map workflow](docs/images/studio-map-explore.png)
 
@@ -78,6 +81,16 @@ ruff check .
 uv run pytest -q
 npm run test:e2e:with-api
 ```
+
+## CI and Merge Protection
+- CI runs on every PR to `main` and on pushes to `main` via `.github/workflows/ci.yml`.
+- The workflow runs:
+  - `uv run pytest -q tests/test_api.py`
+  - `npm run test:e2e:with-api`
+- Recommended repository setting:
+  - enable branch protection for `main`
+  - require status checks to pass before merging
+  - select required check: `CI / tests`
 
 ## License
 MIT
