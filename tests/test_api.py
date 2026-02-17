@@ -181,6 +181,43 @@ def test_submit_json_job_and_fetch_result():
     assert len(payload["series"]["ts2"]) == len(ts2)
     assert "matrix_r" in payload
     assert "matrix_p" in payload
+    assert "lag_matrix_r" in payload
+    assert "lag_matrix_p" in payload
+    assert payload["lag_default"] == 0
+    assert payload["lag_matrix_r"]["y"]
+    assert payload["lag_matrix_p"]["y"] == payload["lag_matrix_r"]["y"]
+    matrix_x = payload["matrix_r"]["x"]
+    matrix_y = payload["matrix_r"]["y"]
+    matrix_z = payload["matrix_r"]["z"]
+    checked = 0
+    for row_idx, start2 in enumerate(matrix_y):
+        for col_idx, start1 in enumerate(matrix_x):
+            lag = int(start1) - int(start2)
+            if lag < -10 or lag > 10:
+                assert matrix_z[row_idx][col_idx] is None
+                checked += 1
+                if checked >= 40:
+                    break
+        if checked >= 40:
+            break
+
+    lag_x = payload["lag_matrix_r"]["x"]
+    lag_y = payload["lag_matrix_r"]["y"]
+    lag_z = payload["lag_matrix_r"]["z"]
+    min_start2 = min(matrix_y)
+    max_start2 = max(matrix_y)
+    checked_lag = 0
+    for row_idx, lag in enumerate(lag_y):
+        for col_idx, start1 in enumerate(lag_x):
+            start2 = int(start1) - int(lag)
+            if start2 < min_start2 or start2 > max_start2:
+                assert lag_z[row_idx][col_idx] is None
+                checked_lag += 1
+                if checked_lag >= 40:
+                    break
+        if checked_lag >= 40:
+            break
+
     assert "runtime_seconds" in payload
 
 
@@ -216,6 +253,36 @@ def test_submit_csv_job():
     result = client.get(f"/api/v1/jobs/{job_id}/result")
     assert result.status_code == 200
     assert result.json()["status"] == "succeeded"
+
+
+def test_lag_default_uses_nearest_available_when_zero_not_in_range():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    ts1, ts2 = _series_payload()
+    response = client.post(
+        "/api/v1/jobs/sdc",
+        json={
+            "ts1": ts1,
+            "ts2": ts2,
+            "fragment_size": 12,
+            "n_permutations": 9,
+            "method": "pearson",
+            "alpha": 0.05,
+            "min_lag": 5,
+            "max_lag": 10,
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    result = client.get(f"/api/v1/jobs/{job_id}/result")
+    assert result.status_code == 200
+    payload = result.json()["result"]
+    lag_values = payload["lag_matrix_r"]["y"]
+    assert lag_values
+    nearest = min(lag_values, key=lambda value: abs(value))
+    assert payload["lag_default"] == nearest
 
 
 def test_dataset_inspection_and_submission_flow():

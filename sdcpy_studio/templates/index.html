@@ -294,6 +294,52 @@
                   Alpha updates live. Changing fragment size or heatmap step re-runs analysis.
                 </p>
               </div>
+              <div id="sdc_lag_controls" class="plot-controls sdc-lag-controls" hidden>
+                <label>Lag view min
+                  <input
+                    id="plot_lag_min"
+                    data-testid="plot-lag-min-input"
+                    type="number"
+                    step="1"
+                    value="-120"
+                  />
+                </label>
+                <label>Lag view max
+                  <input
+                    id="plot_lag_max"
+                    data-testid="plot-lag-max-input"
+                    type="number"
+                    step="1"
+                    value="120"
+                  />
+                </label>
+                <label class="range-field">Focused lag
+                  <div class="range-meta">
+                    <input
+                      id="plot_lag_focus"
+                      data-testid="plot-lag-focus-slider"
+                      type="range"
+                      step="1"
+                      min="-120"
+                      max="120"
+                      value="0"
+                    />
+                    <output id="plot_lag_focus_value" for="plot_lag_focus">0</output>
+                  </div>
+                </label>
+                <label>Focused lag (numeric)
+                  <input
+                    id="plot_lag_focus_number"
+                    data-testid="plot-lag-focus-number-input"
+                    type="number"
+                    step="1"
+                    value="0"
+                  />
+                </label>
+                <p class="hint plot-controls-hint">
+                  Lag min/max only filter this view; they do not recompute analysis.
+                </p>
+              </div>
               <section class="explorer-downloads" aria-label="downloads">
                 <h3>Download</h3>
                 <div class="download-grid">
@@ -313,7 +359,35 @@
               </section>
             </aside>
             <div class="explorer-stage">
+              <div class="sdc-result-tabs" role="tablist" aria-label="2-way explorer result views">
+                <button
+                  id="sdc_explorer_tab_matrix"
+                  data-testid="sdc-explorer-tab-matrix"
+                  class="sdc-tab-btn is-active"
+                  role="tab"
+                  type="button"
+                  aria-selected="true"
+                >
+                  Matrix view
+                </button>
+                <button
+                  id="sdc_explorer_tab_lag"
+                  data-testid="sdc-explorer-tab-lag"
+                  class="sdc-tab-btn"
+                  role="tab"
+                  type="button"
+                  aria-selected="false"
+                >
+                  Lag focus view
+                </button>
+              </div>
               <div id="two_way_explorer" data-testid="two-way-explorer" class="plot plot-large"></div>
+              <div
+                id="two_way_lag_explorer"
+                data-testid="two-way-lag-explorer"
+                class="plot plot-large"
+                hidden
+              ></div>
             </div>
           </div>
         </details>

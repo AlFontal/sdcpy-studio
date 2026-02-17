@@ -19,6 +19,16 @@ const plotAlphaInput = document.getElementById("plot_alpha");
 const plotAlphaValue = document.getElementById("plot_alpha_value");
 const plotHeatmapStepInput = document.getElementById("plot_heatmap_step");
 const plotApplyButton = document.getElementById("plot_apply");
+const plotLagMinInput = document.getElementById("plot_lag_min");
+const plotLagMaxInput = document.getElementById("plot_lag_max");
+const plotLagFocusSlider = document.getElementById("plot_lag_focus");
+const plotLagFocusValue = document.getElementById("plot_lag_focus_value");
+const plotLagFocusNumberInput = document.getElementById("plot_lag_focus_number");
+const sdcLagControls = document.getElementById("sdc_lag_controls");
+const sdcExplorerMatrixTabButton = document.getElementById("sdc_explorer_tab_matrix");
+const sdcExplorerLagTabButton = document.getElementById("sdc_explorer_tab_lag");
+const twoWayMatrixExplorerContainer = document.getElementById("two_way_explorer");
+const twoWayLagExplorerContainer = document.getElementById("two_way_lag_explorer");
 const workflowTabSdcButton = document.getElementById("workflow_tab_sdc");
 const workflowTabMapButton = document.getElementById("workflow_tab_map");
 const workflowSdcCards = Array.from(document.querySelectorAll(".workflow-sdc"));
@@ -125,6 +135,13 @@ let mapTimePlaying = false;
 let heatmapStepManuallyOverridden = false;
 let latestValidatedSeriesLength = 0;
 let mapDatasetCatalog = null;
+let activeSdcExplorerTab = "matrix";
+let lagExplorerState = {
+  availableLags: [],
+  minLag: null,
+  maxLag: null,
+  selectedLag: null,
+};
 
 const MAP_DRIVER_LABEL_OVERRIDES = {
   pdo: "Pacific Decadal Oscillation (PDO)",
@@ -149,6 +166,8 @@ const RD_BU_WHITE_CENTER = [
   [0.875, "#b2182b"],
   [1.0, "#67001f"],
 ];
+const TS1_PLOT_COLOR = "#f06f6c";
+const TS2_PLOT_COLOR = "#18b8bd";
 
 const ADAPTIVE_HEATMAP_BASE_LENGTH = 2000;
 const MIN_ANALYSIS_SERIES_LENGTH = 20;
@@ -1265,6 +1284,56 @@ async function applyPlotControls() {
   await rerunActiveWorkflow();
 }
 
+function applyLagRangeFromInputs() {
+  const lagValues = lagExplorerState.availableLags || [];
+  if (!lagValues.length) {
+    return;
+  }
+  const minAvailable = lagValues[0];
+  const maxAvailable = lagValues[lagValues.length - 1];
+  const nextMinRaw = Math.round(Number(plotLagMinInput?.value));
+  const nextMaxRaw = Math.round(Number(plotLagMaxInput?.value));
+  const nextMin = Number.isFinite(nextMinRaw) ? Math.max(minAvailable, nextMinRaw) : minAvailable;
+  const nextMax = Number.isFinite(nextMaxRaw) ? Math.min(maxAvailable, nextMaxRaw) : maxAvailable;
+
+  lagExplorerState.minLag = Math.min(nextMin, nextMax);
+  lagExplorerState.maxLag = Math.max(nextMin, nextMax);
+  lagExplorerState.selectedLag = clampLagToFilteredRange(
+    lagExplorerState.selectedLag,
+    lagValues,
+    lagExplorerState.minLag,
+    lagExplorerState.maxLag
+  );
+  syncLagControlsFromState();
+  if (latestResult && activeSdcExplorerTab === "lag") {
+    renderLagFocusExplorer(latestResult);
+  }
+}
+
+function applyFocusedLagFromInput(rawValue) {
+  const lagValues = lagExplorerState.availableLags || [];
+  if (!lagValues.length) {
+    return;
+  }
+  const minLag = Number(lagExplorerState.minLag);
+  const maxLag = Number(lagExplorerState.maxLag);
+  const parsed = Math.round(Number(rawValue));
+  if (!Number.isFinite(parsed)) {
+    syncLagControlsFromState();
+    return;
+  }
+  const clamped = clampLagToFilteredRange(parsed, lagValues, minLag, maxLag);
+  if (clamped === null) {
+    syncLagControlsFromState();
+    return;
+  }
+  lagExplorerState.selectedLag = clamped;
+  syncLagControlsFromState();
+  if (latestResult && activeSdcExplorerTab === "lag") {
+    renderLagFocusExplorer(latestResult);
+  }
+}
+
 function renderSummary(summary, notes, runtimeSeconds) {
   const keys = [
     ["series_length", "Series length"],
@@ -1382,6 +1451,191 @@ function normalizePosition(value, maxIndex) {
   return Math.max(0, Math.min(maxIndex, rounded));
 }
 
+function resetLagExplorerState() {
+  lagExplorerState = {
+    availableLags: [],
+    minLag: null,
+    maxLag: null,
+    selectedLag: null,
+  };
+}
+
+function getLagExplorerMatrices(result) {
+  const lagMatrixR = result?.lag_matrix_r;
+  const lagMatrixP = result?.lag_matrix_p;
+  if (!lagMatrixR || !lagMatrixP) {
+    return null;
+  }
+  if (!Array.isArray(lagMatrixR.x) || !Array.isArray(lagMatrixR.y) || !Array.isArray(lagMatrixR.z)) {
+    return null;
+  }
+  if (!Array.isArray(lagMatrixP.x) || !Array.isArray(lagMatrixP.y) || !Array.isArray(lagMatrixP.z)) {
+    return null;
+  }
+  if (!lagMatrixR.x.length || !lagMatrixR.y.length || !lagMatrixR.z.length) {
+    return null;
+  }
+  return { lagMatrixR, lagMatrixP };
+}
+
+function hasLagExplorerData(result) {
+  return !!getLagExplorerMatrices(result);
+}
+
+function nearestLagValue(target, lagValues) {
+  if (!Array.isArray(lagValues) || !lagValues.length) {
+    return null;
+  }
+  let best = Number(lagValues[0]);
+  let bestDist = Math.abs(best - Number(target));
+  for (let i = 1; i < lagValues.length; i += 1) {
+    const candidate = Number(lagValues[i]);
+    const dist = Math.abs(candidate - Number(target));
+    if (dist < bestDist) {
+      best = candidate;
+      bestDist = dist;
+    }
+  }
+  return Number.isFinite(best) ? best : null;
+}
+
+function clampLagToFilteredRange(target, lagValues, minLag, maxLag) {
+  const filtered = (lagValues || []).filter((lag) => lag >= minLag && lag <= maxLag);
+  return nearestLagValue(target, filtered);
+}
+
+function syncLagControlVisibility() {
+  const show = activeSdcExplorerTab === "lag" && hasLagExplorerData(latestResult);
+  if (sdcLagControls) {
+    sdcLagControls.hidden = !show;
+  }
+  if (twoWayMatrixExplorerContainer) {
+    twoWayMatrixExplorerContainer.hidden = activeSdcExplorerTab !== "matrix";
+  }
+  if (twoWayLagExplorerContainer) {
+    twoWayLagExplorerContainer.hidden = activeSdcExplorerTab !== "lag";
+  }
+}
+
+function setSdcExplorerTab(nextTab, { rerender = true } = {}) {
+  const normalized = nextTab === "lag" ? "lag" : "matrix";
+  activeSdcExplorerTab = normalized;
+  if (sdcExplorerMatrixTabButton) {
+    const isActive = normalized === "matrix";
+    sdcExplorerMatrixTabButton.classList.toggle("is-active", isActive);
+    sdcExplorerMatrixTabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+  if (sdcExplorerLagTabButton) {
+    const isActive = normalized === "lag";
+    sdcExplorerLagTabButton.classList.toggle("is-active", isActive);
+    sdcExplorerLagTabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+  syncLagControlVisibility();
+  if (rerender && latestResult) {
+    renderTwoWayExplorer(latestResult);
+  }
+}
+
+function setSdcExplorerTabAvailability(result) {
+  const hasLagData = hasLagExplorerData(result);
+  if (sdcExplorerLagTabButton) {
+    sdcExplorerLagTabButton.disabled = !hasLagData;
+  }
+  if (!hasLagData && activeSdcExplorerTab === "lag") {
+    setSdcExplorerTab("matrix", { rerender: false });
+  }
+  syncLagControlVisibility();
+}
+
+function initializeLagExplorerState(result, { reset = false } = {}) {
+  const matrices = getLagExplorerMatrices(result);
+  if (!matrices) {
+    resetLagExplorerState();
+    return;
+  }
+  if (!reset && lagExplorerState.availableLags.length) {
+    return;
+  }
+
+  const availableLags = matrices.lagMatrixR.y
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+
+  if (!availableLags.length) {
+    resetLagExplorerState();
+    return;
+  }
+
+  const minLag = availableLags[0];
+  const maxLag = availableLags[availableLags.length - 1];
+  const preferredLagRaw = Number(result?.lag_default);
+  const preferredLag = Number.isFinite(preferredLagRaw) ? preferredLagRaw : 0;
+  const selectedLag = nearestLagValue(preferredLag, availableLags);
+
+  lagExplorerState = {
+    availableLags,
+    minLag,
+    maxLag,
+    selectedLag,
+  };
+}
+
+function syncLagControlsFromState() {
+  const lagValues = lagExplorerState.availableLags || [];
+  if (!lagValues.length) {
+    return;
+  }
+  const minAvailable = lagValues[0];
+  const maxAvailable = lagValues[lagValues.length - 1];
+  const rawMin = Number(lagExplorerState.minLag);
+  const rawMax = Number(lagExplorerState.maxLag);
+  const minLagCandidate = Number.isFinite(rawMin) ? rawMin : minAvailable;
+  const maxLagCandidate = Number.isFinite(rawMax) ? rawMax : maxAvailable;
+  const minLag = Math.max(minAvailable, minLagCandidate);
+  const maxLag = Math.min(maxAvailable, maxLagCandidate);
+  const normalizedMin = minLag;
+  const normalizedMax = Math.max(normalizedMin, maxLag);
+  const selectedLagRaw = Number(lagExplorerState.selectedLag);
+  const selectedLag =
+    clampLagToFilteredRange(
+      Number.isFinite(selectedLagRaw) ? selectedLagRaw : 0,
+      lagValues,
+      normalizedMin,
+      normalizedMax
+    ) ?? normalizedMin;
+
+  lagExplorerState.minLag = normalizedMin;
+  lagExplorerState.maxLag = normalizedMax;
+  lagExplorerState.selectedLag = selectedLag;
+
+  if (plotLagMinInput) {
+    plotLagMinInput.value = String(normalizedMin);
+    plotLagMinInput.min = String(minAvailable);
+    plotLagMinInput.max = String(maxAvailable);
+  }
+  if (plotLagMaxInput) {
+    plotLagMaxInput.value = String(normalizedMax);
+    plotLagMaxInput.min = String(minAvailable);
+    plotLagMaxInput.max = String(maxAvailable);
+  }
+  if (plotLagFocusSlider) {
+    plotLagFocusSlider.min = String(normalizedMin);
+    plotLagFocusSlider.max = String(normalizedMax);
+    plotLagFocusSlider.step = "1";
+    plotLagFocusSlider.value = String(selectedLag);
+  }
+  if (plotLagFocusValue) {
+    plotLagFocusValue.textContent = String(selectedLag);
+  }
+  if (plotLagFocusNumberInput) {
+    plotLagFocusNumberInput.value = String(selectedLag);
+    plotLagFocusNumberInput.min = String(normalizedMin);
+    plotLagFocusNumberInput.max = String(normalizedMax);
+    plotLagFocusNumberInput.step = "1";
+  }
+}
+
 function setAnalysisSettingsUnlocked(unlocked) {
   analysisSettingsUnlocked = !!unlocked;
   if (!analysisSettingsDetails) {
@@ -1421,7 +1675,7 @@ function setInputMode(mode) {
   updateHeatmapStepNotice();
 }
 
-function renderTwoWayExplorer(result) {
+function renderTwoWayMatrixExplorer(result) {
   const containerId = "two_way_explorer";
   const container = document.getElementById(containerId);
   if (!window.Plotly) {
@@ -1491,12 +1745,19 @@ function renderTwoWayExplorer(result) {
   const heatmapHoverData = heatYStart.map((start2, rowIdx) => {
     const start2Label = startIndexToLabel(start2);
     return heatXStart.map((start1, colIdx) => {
-      const rValue = Number(matrixR?.z?.[rowIdx]?.[colIdx]);
-      const pValue = Number(matrixP?.z?.[rowIdx]?.[colIdx]);
-      const isSignificant =
-        Number.isFinite(rValue) && Number.isFinite(pValue) && pValue <= alpha;
-      const rLabel = Number.isFinite(rValue) ? rValue.toFixed(3) : "NA";
-      const statText = isSignificant ? `r=${rLabel}` : `NS (r=${rLabel})`;
+      const rawR = matrixR?.z?.[rowIdx]?.[colIdx];
+      const rawP = matrixP?.z?.[rowIdx]?.[colIdx];
+      const hasValues =
+        typeof rawR === "number" &&
+        Number.isFinite(rawR) &&
+        typeof rawP === "number" &&
+        Number.isFinite(rawP);
+      let statText = "Not tested";
+      if (hasValues) {
+        const rValue = Number(rawR);
+        const pValue = Number(rawP);
+        statText = pValue <= alpha ? `r=${rValue.toFixed(3)}` : `NS (r=${rValue.toFixed(3)})`;
+      }
       return [startIndexToLabel(start1), start2Label, statText];
     });
   });
@@ -1770,7 +2031,7 @@ function renderTwoWayExplorer(result) {
       zmax: zAbsMax,
       zmid: 0,
       zsmooth: false,
-      hoverongaps: true,
+      hoverongaps: false,
       xaxis: "x",
       yaxis: "y",
       hovertemplate: "start_1=%{customdata[0]}<br>start_2=%{customdata[1]}<br>%{customdata[2]}<extra></extra>",
@@ -2166,6 +2427,512 @@ function renderTwoWayExplorer(result) {
   });
 }
 
+function renderLagFocusExplorer(result) {
+  const containerId = "two_way_lag_explorer";
+  const container = twoWayLagExplorerContainer || document.getElementById(containerId);
+  if (!window.Plotly) {
+    if (container) {
+      container.textContent = "Plotly library unavailable in this environment.";
+    }
+    return;
+  }
+
+  const matrices = getLagExplorerMatrices(result);
+  const series = result?.series;
+  const fragmentSize = Number(result?.summary?.fragment_size || 1);
+  const alpha = getExplorerAlpha(result?.summary?.alpha || 0.05);
+  const corrLabel = methodCorrelationLabel(result?.summary?.method);
+
+  if (!matrices || !series?.index?.length) {
+    Plotly.newPlot(
+      containerId,
+      [],
+      {
+        title: "Lag focus view unavailable",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+      },
+      { responsive: true, displaylogo: false }
+    );
+    return;
+  }
+
+  initializeLagExplorerState(result);
+  syncLagControlsFromState();
+
+  const lagMatrixR = matrices.lagMatrixR;
+  const lagMatrixP = matrices.lagMatrixP;
+  const labels = series.index.map((v) => String(v));
+  const seriesLength = Math.min(series.ts1.length, series.ts2.length, labels.length);
+  if (seriesLength < fragmentSize) {
+    Plotly.newPlot(
+      containerId,
+      [],
+      {
+        title: "Lag focus view unavailable",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+      },
+      { responsive: true, displaylogo: false }
+    );
+    return;
+  }
+
+  const ts1Series = series.ts1.slice(0, seriesLength);
+  const ts2Series = series.ts2.slice(0, seriesLength);
+  const labelSeries = labels.slice(0, seriesLength).map((label) => formatTooltipDate(label));
+  const seriesPositions = Array.from({ length: seriesLength }, (_, idx) => idx);
+  const fragmentCenterOffset = (fragmentSize - 1) / 2;
+  const heatXStart = lagMatrixR.x.map((v) => Number(v));
+  const heatX = heatXStart.map((v) => v + fragmentCenterOffset);
+  const availableLags = lagExplorerState.availableLags || [];
+  if (!availableLags.length) {
+    Plotly.newPlot(
+      containerId,
+      [],
+      {
+        title: "Lag focus view unavailable",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+      },
+      { responsive: true, displaylogo: false }
+    );
+    return;
+  }
+
+  const minLag = Number(lagExplorerState.minLag);
+  const maxLag = Number(lagExplorerState.maxLag);
+  const filteredLagIndices = [];
+  availableLags.forEach((lagValue, idx) => {
+    if (lagValue >= minLag && lagValue <= maxLag) {
+      filteredLagIndices.push(idx);
+    }
+  });
+  if (!filteredLagIndices.length) {
+    Plotly.newPlot(
+      containerId,
+      [],
+      {
+        title: "Lag focus view unavailable for selected lag range",
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+      },
+      { responsive: true, displaylogo: false }
+    );
+    return;
+  }
+
+  const filteredLags = filteredLagIndices.map((idx) => availableLags[idx]);
+  const clampedSelectedLag =
+    clampLagToFilteredRange(lagExplorerState.selectedLag, availableLags, minLag, maxLag) ??
+    filteredLags[0];
+  lagExplorerState.selectedLag = clampedSelectedLag;
+  syncLagControlsFromState();
+
+  const zMasked = filteredLagIndices.map((rowIdx) => {
+    const rowR = lagMatrixR.z?.[rowIdx] || [];
+    const rowP = lagMatrixP.z?.[rowIdx] || [];
+    return heatX.map((_, colIdx) => {
+      const rawR = rowR?.[colIdx];
+      const rawP = rowP?.[colIdx];
+      if (
+        typeof rawR !== "number" ||
+        !Number.isFinite(rawR) ||
+        typeof rawP !== "number" ||
+        !Number.isFinite(rawP)
+      ) {
+        return null;
+      }
+      return rawP <= alpha ? rawR : null;
+    });
+  });
+
+  let zAbsMax = 0;
+  zMasked.forEach((row) => {
+    row.forEach((value) => {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        zAbsMax = Math.max(zAbsMax, Math.abs(value));
+      }
+    });
+  });
+  if (zAbsMax <= 0) {
+    zAbsMax = 1;
+  }
+
+  const selectedLagGlobalIndex = availableLags.findIndex((lag) => lag === clampedSelectedLag);
+  const selectedLine =
+    selectedLagGlobalIndex >= 0
+      ? heatX.map((_, colIdx) => {
+          const rawValue = lagMatrixR?.z?.[selectedLagGlobalIndex]?.[colIdx];
+          return typeof rawValue === "number" && Number.isFinite(rawValue) ? rawValue : null;
+        })
+      : new Array(heatX.length).fill(null);
+  const axisMin = -0.5;
+  const axisMax = seriesLength - 0.5;
+  const maxStartIndex = Math.max(0, seriesLength - fragmentSize);
+  const containerWidth = container?.clientWidth || 1200;
+  const compactLayout = containerWidth < 1000;
+  const tinyLayout = containerWidth < 760;
+  const tsTicks = buildAxisTicks(
+    labelSeries,
+    tinyLayout ? 4 : compactLayout ? 5 : 7,
+    seriesPositions
+  );
+
+  const finiteTs1 = ts1Series.filter(
+    (value) => typeof value === "number" && Number.isFinite(value)
+  );
+  const finiteTs2 = ts2Series.filter(
+    (value) => typeof value === "number" && Number.isFinite(value)
+  );
+  const ts1Min = finiteTs1.length ? Math.min(...finiteTs1) : -1;
+  const ts1Max = finiteTs1.length ? Math.max(...finiteTs1) : 1;
+  const ts1Pad = Math.max(0.05, (ts1Max - ts1Min) * 0.04);
+  const ts2Min = finiteTs2.length ? Math.min(...finiteTs2) : -1;
+  const ts2Max = finiteTs2.length ? Math.max(...finiteTs2) : 1;
+  const ts2Pad = Math.max(0.05, (ts2Max - ts2Min) * 0.04);
+  const ts1Label = normalizeSeriesLabel(result?.summary?.ts1_label, "TS1");
+  const ts2Label = normalizeSeriesLabel(result?.summary?.ts2_label, "TS2");
+
+  const traces = [
+    {
+      type: "scatter",
+      mode: "lines",
+      x: seriesPositions,
+      y: ts1Series,
+      xaxis: "x",
+      yaxis: "y",
+      name: ts1Label,
+      line: { color: TS1_PLOT_COLOR, width: 2.1, simplify: false },
+      customdata: labelSeries,
+      hovertemplate: `t=%{customdata}<br>${ts1Label}=%{y:.3f}<extra></extra>`,
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: seriesPositions,
+      y: ts2Series,
+      xaxis: "x",
+      yaxis: "y2",
+      name: ts2Label,
+      line: { color: TS2_PLOT_COLOR, width: 2.1, simplify: false },
+      customdata: labelSeries,
+      hovertemplate: `t=%{customdata}<br>${ts2Label}=%{y:.3f}<extra></extra>`,
+    },
+    {
+      type: "heatmap",
+      x: heatX,
+      y: filteredLags,
+      z: zMasked,
+      xaxis: "x2",
+      yaxis: "y3",
+      colorscale: RD_BU_WHITE_CENTER,
+      zmin: -zAbsMax,
+      zmax: zAbsMax,
+      zmid: 0,
+      zsmooth: false,
+      hoverongaps: false,
+      hovertemplate: "t=%{x:.1f}<br>lag=%{y}<br>r=%{z:.3f}<extra></extra>",
+      colorbar: {
+        title: { text: corrLabel },
+        len: 0.33,
+        thickness: tinyLayout ? 12 : 14,
+        y: 0.52,
+        x: 0.965,
+      },
+      name: "Lag heatmap",
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      x: heatX,
+      y: selectedLine,
+      xaxis: "x3",
+      yaxis: "y4",
+      connectgaps: false,
+      line: { color: "#111827", width: 2.1, simplify: false },
+      customdata: heatX.map((value) => {
+        const idx = normalizePosition(Math.round(value), seriesLength - 1);
+        return labelSeries[idx] || String(idx);
+      }),
+      hovertemplate: `t=%{customdata}<br>lag=${clampedSelectedLag}<br>${corrLabel}=%{y:.3f}<extra></extra>`,
+      name: `Focused lag r (lag=${clampedSelectedLag})`,
+    },
+  ];
+
+  const zeroInRange = minLag <= 0 && maxLag >= 0;
+  const shapes = [];
+  if (zeroInRange) {
+    shapes.push({
+      type: "line",
+      xref: "x2",
+      yref: "y3",
+      x0: axisMin,
+      x1: axisMax,
+      y0: 0,
+      y1: 0,
+      line: { color: "#111827", width: 1.2, dash: "dash" },
+    });
+  }
+  shapes.push({
+    type: "line",
+    xref: "x2",
+    yref: "y3",
+    x0: axisMin,
+    x1: axisMax,
+    y0: clampedSelectedLag,
+    y1: clampedSelectedLag,
+    line: { color: "#f97316", width: 1.4, dash: "dot" },
+  });
+  shapes.push({
+    type: "line",
+    xref: "x3",
+    yref: "y4",
+    x0: axisMin,
+    x1: axisMax,
+    y0: 0,
+    y1: 0,
+    line: { color: "#111827", width: 1.2, dash: "dash" },
+  });
+  const baseShapes = [...shapes];
+
+  const layout = {
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    margin: {
+      t: tinyLayout ? 30 : 34,
+      r: tinyLayout ? 44 : 52,
+      b: tinyLayout ? 36 : 40,
+      l: tinyLayout ? 48 : 54,
+    },
+    showlegend: true,
+    legend: {
+      orientation: "h",
+      x: 0,
+      y: 1.02,
+      bgcolor: "rgba(255,255,255,0.65)",
+    },
+    height: Math.round(
+      Math.max(
+        tinyLayout ? 620 : 700,
+        Math.min(980, Math.round(containerWidth * (tinyLayout ? 1.0 : 0.78)))
+      )
+    ),
+    xaxis: {
+      domain: [0.0, 0.94],
+      anchor: "y",
+      range: [axisMin, axisMax],
+      showticklabels: false,
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    yaxis: {
+      domain: [0.74, 0.98],
+      anchor: "x",
+      title: ts1Label,
+      range: [ts1Min - ts1Pad, ts1Max + ts1Pad],
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    yaxis2: {
+      domain: [0.74, 0.98],
+      overlaying: "y",
+      side: "right",
+      title: ts2Label,
+      range: [ts2Min - ts2Pad, ts2Max + ts2Pad],
+      showgrid: false,
+      zeroline: false,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    xaxis2: {
+      domain: [0.0, 0.94],
+      anchor: "y3",
+      range: [axisMin, axisMax],
+      matches: "x",
+      showticklabels: false,
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    yaxis3: {
+      domain: [0.34, 0.68],
+      anchor: "x2",
+      title: "Lag",
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    xaxis3: {
+      domain: [0.0, 0.94],
+      anchor: "y4",
+      range: [axisMin, axisMax],
+      matches: "x",
+      tickmode: "array",
+      tickvals: tsTicks.tickvals,
+      ticktext: tsTicks.ticktext,
+      tickangle: 0,
+      title: "Series 1 time",
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    yaxis4: {
+      domain: [0.08, 0.28],
+      anchor: "x3",
+      title: corrLabel,
+      range: [-1, 1],
+      showgrid: true,
+      gridcolor: "#d1d5db",
+      zeroline: false,
+      mirror: true,
+      showline: true,
+      linecolor: "#000",
+      linewidth: 1.1,
+    },
+    annotations: [
+      {
+        xref: "paper",
+        yref: "paper",
+        x: 0.0,
+        y: 1.05,
+        xanchor: "left",
+        yanchor: "bottom",
+        text: `alpha <= ${alpha.toFixed(3)}`,
+        showarrow: false,
+        font: {
+          family: "JetBrains Mono, monospace",
+          size: tinyLayout ? 10 : 11,
+          color: "#334155",
+        },
+      },
+      {
+        xref: "paper",
+        yref: "paper",
+        x: 0.0,
+        y: 0.305,
+        xanchor: "left",
+        yanchor: "bottom",
+        text: `Focused lag = ${clampedSelectedLag}`,
+        showarrow: false,
+        font: {
+          family: "JetBrains Mono, monospace",
+          size: tinyLayout ? 10 : 11,
+          color: "#334155",
+        },
+      },
+    ],
+    shapes: baseShapes,
+  };
+
+  Plotly.newPlot(containerId, traces, layout, { responsive: true, displaylogo: false }).then((gd) => {
+    if (typeof gd.removeAllListeners === "function") {
+      gd.removeAllListeners("plotly_hover");
+      gd.removeAllListeners("plotly_unhover");
+    }
+
+    const clearHighlight = () => {
+      Plotly.relayout(gd, { shapes: baseShapes });
+    };
+
+    gd.on("plotly_hover", (event) => {
+      const point = event?.points?.[0];
+      if (!point || point.curveNumber !== 2) {
+        return;
+      }
+      const center1 = Number(point.x);
+      const lagValue = Number(point.y);
+      if (!Number.isFinite(center1) || !Number.isFinite(lagValue)) {
+        return;
+      }
+
+      const start1 = Math.max(
+        0,
+        Math.min(maxStartIndex, Math.round(center1 - fragmentCenterOffset))
+      );
+      const stop1 = Math.min(seriesLength - 1, start1 + fragmentSize - 1);
+      const start2 = Math.max(0, Math.min(maxStartIndex, start1 - Math.round(lagValue)));
+      const stop2 = Math.min(seriesLength - 1, start2 + fragmentSize - 1);
+      const topPanelY0 = 0.74;
+      const topPanelY1 = 0.98;
+
+      const ts1ShadowRect = {
+        type: "rect",
+        xref: "x",
+        yref: "paper",
+        x0: start1 - 0.5,
+        x1: stop1 + 0.5,
+        y0: topPanelY0,
+        y1: topPanelY1,
+        line: { width: 0 },
+        fillcolor: "rgba(240, 111, 108, 0.18)",
+      };
+      const ts2ShadowRect = {
+        type: "rect",
+        xref: "x",
+        yref: "paper",
+        x0: start2 - 0.5,
+        x1: stop2 + 0.5,
+        y0: topPanelY0,
+        y1: topPanelY1,
+        line: { width: 0 },
+        fillcolor: "rgba(24, 184, 189, 0.18)",
+      };
+      const heatMarkerRect = {
+        type: "rect",
+        xref: "x2",
+        yref: "y3",
+        x0: center1 - 0.5,
+        x1: center1 + 0.5,
+        y0: lagValue - 0.5,
+        y1: lagValue + 0.5,
+        line: { color: "#f97316", width: 1.4 },
+        fillcolor: "rgba(249, 115, 22, 0.12)",
+      };
+
+      Plotly.relayout(gd, {
+        shapes: [...baseShapes, ts1ShadowRect, ts2ShadowRect, heatMarkerRect],
+      });
+    });
+
+    gd.on("plotly_unhover", clearHighlight);
+  });
+}
+
+function renderTwoWayExplorer(result) {
+  setSdcExplorerTabAvailability(result);
+  initializeLagExplorerState(result);
+  syncLagControlsFromState();
+  if (activeSdcExplorerTab === "lag" && hasLagExplorerData(result)) {
+    renderLagFocusExplorer(result);
+    return;
+  }
+  renderTwoWayMatrixExplorer(result);
+}
+
 function populateSelect(selectEl, values, includeBlank = false, blankLabel = "(none)") {
   selectEl.innerHTML = "";
   if (includeBlank) {
@@ -2408,6 +3175,10 @@ async function fetchResult(jobId) {
   if (Number.isFinite(Number(result?.summary?.series_length))) {
     latestValidatedSeriesLength = Math.max(0, Math.floor(Number(result.summary.series_length)));
   }
+  resetLagExplorerState();
+  initializeLagExplorerState(result, { reset: true });
+  setSdcExplorerTabAvailability(result);
+  syncLagControlsFromState();
   expandExplorerAfterFirstSuccessfulRun();
   syncPlotControlsFromSettings();
   updateHeatmapStepNotice();
@@ -3396,6 +4167,19 @@ function attachHandlers() {
   if (workflowTabMapButton) {
     workflowTabMapButton.addEventListener("click", () => setWorkflowTab("map"));
   }
+  if (sdcExplorerMatrixTabButton) {
+    sdcExplorerMatrixTabButton.addEventListener("click", () => {
+      setSdcExplorerTab("matrix");
+    });
+  }
+  if (sdcExplorerLagTabButton) {
+    sdcExplorerLagTabButton.addEventListener("click", () => {
+      if (sdcExplorerLagTabButton.disabled) {
+        return;
+      }
+      setSdcExplorerTab("lag");
+    });
+  }
 
   document.getElementById("load_example").addEventListener("click", async () => {
     try {
@@ -3549,6 +4333,34 @@ function attachHandlers() {
     });
   }
 
+  if (plotLagMinInput) {
+    plotLagMinInput.addEventListener("change", () => {
+      applyLagRangeFromInputs();
+    });
+  }
+  if (plotLagMaxInput) {
+    plotLagMaxInput.addEventListener("change", () => {
+      applyLagRangeFromInputs();
+    });
+  }
+  if (plotLagFocusSlider) {
+    plotLagFocusSlider.addEventListener("input", () => {
+      applyFocusedLagFromInput(plotLagFocusSlider.value);
+    });
+  }
+  if (plotLagFocusNumberInput) {
+    plotLagFocusNumberInput.addEventListener("change", () => {
+      applyFocusedLagFromInput(plotLagFocusNumberInput.value);
+    });
+    plotLagFocusNumberInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      applyFocusedLagFromInput(plotLagFocusNumberInput.value);
+    });
+  }
+
   downloadXlsxButton.addEventListener("click", () => triggerDownload("xlsx"));
   downloadPngButton.addEventListener("click", () => triggerDownload("png"));
   downloadSvgButton.addEventListener("click", () => triggerDownload("svg"));
@@ -3681,6 +4493,8 @@ setMapDownloadButtons(false);
 setAnalysisSettingsUnlocked(false);
 setInputMode(activeInputMode);
 setWorkflowTab(activeWorkflowTab);
+setSdcExplorerTab("matrix", { rerender: false });
+setSdcExplorerTabAvailability(null);
 syncPlotControlsFromSettings();
 updateHeatmapStepNotice();
 setMapProgress();

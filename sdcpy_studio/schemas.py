@@ -177,6 +177,9 @@ class JobResultPayload(BaseModel):
     series: SeriesPayload
     matrix_r: MatrixPayload
     matrix_p: MatrixPayload
+    lag_matrix_r: MatrixPayload | None = None
+    lag_matrix_p: MatrixPayload | None = None
+    lag_default: int | None = None
     strongest_links: list[dict]
     notes: list[str]
     runtime_seconds: float
