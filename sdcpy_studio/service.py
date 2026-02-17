@@ -431,6 +431,51 @@ def _downsample_matrix(matrix: pd.DataFrame, step: int = 1) -> pd.DataFrame:
     return matrix.iloc[::stride, ::stride]
 
 
+def _downsample_matrix_columns(matrix: pd.DataFrame, step: int = 1) -> pd.DataFrame:
+    if matrix.empty:
+        return matrix
+    stride = max(1, int(step))
+    return matrix.iloc[:, ::stride]
+
+
+def _mask_matrix_outside_lag_window(
+    r_matrix: pd.DataFrame,
+    p_matrix: pd.DataFrame,
+    min_lag: int,
+    max_lag: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if r_matrix.empty:
+        return r_matrix, p_matrix.reindex_like(r_matrix)
+
+    rows = r_matrix.index.to_numpy(dtype=float)
+    cols = r_matrix.columns.to_numpy(dtype=float)
+    lag_grid = cols[np.newaxis, :] - rows[:, np.newaxis]
+    valid_mask = (lag_grid >= float(min_lag)) & (lag_grid <= float(max_lag))
+
+    r_masked = r_matrix.where(valid_mask, np.nan)
+    p_masked = p_matrix.reindex_like(r_matrix).where(valid_mask, np.nan)
+    return r_masked, p_masked
+
+
+def _mask_lag_matrix_outside_start2_range(
+    lag_r_matrix: pd.DataFrame,
+    lag_p_matrix: pd.DataFrame,
+    min_start2: int,
+    max_start2: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if lag_r_matrix.empty:
+        return lag_r_matrix, lag_p_matrix.reindex_like(lag_r_matrix)
+
+    lag_values = lag_r_matrix.index.to_numpy(dtype=float)
+    start1_values = lag_r_matrix.columns.to_numpy(dtype=float)
+    start2_grid = start1_values[np.newaxis, :] - lag_values[:, np.newaxis]
+    valid_mask = (start2_grid >= float(min_start2)) & (start2_grid <= float(max_start2))
+
+    r_masked = lag_r_matrix.where(valid_mask, np.nan)
+    p_masked = lag_p_matrix.reindex_like(lag_r_matrix).where(valid_mask, np.nan)
+    return r_masked, p_masked
+
+
 def _matrix_payload(matrix: pd.DataFrame) -> dict:
     if matrix.empty:
         return {"x": [], "y": [], "z": []}
@@ -1638,10 +1683,45 @@ def run_sdc_job(
     r_matrix_full = valid.pivot(index="start_2", columns="start_1", values="r")
     p_matrix_full = valid.pivot(index="start_2", columns="start_1", values="p_value")
     p_matrix_full = p_matrix_full.reindex_like(r_matrix_full)
+    r_matrix_full, p_matrix_full = _mask_matrix_outside_lag_window(
+        r_matrix_full,
+        p_matrix_full,
+        request.min_lag,
+        request.max_lag,
+    )
 
     r_matrix = _downsample_matrix(r_matrix_full, request.heatmap_step)
     p_matrix = _downsample_matrix(p_matrix_full, request.heatmap_step)
     p_matrix = p_matrix.reindex(index=r_matrix.index, columns=r_matrix.columns)
+
+    lag_r_full = valid.pivot(index="lag", columns="start_1", values="r").sort_index(axis=0)
+    lag_r_full = lag_r_full.sort_index(axis=1)
+    lag_p_full = valid.pivot(index="lag", columns="start_1", values="p_value").sort_index(axis=0)
+    lag_p_full = lag_p_full.sort_index(axis=1).reindex_like(lag_r_full)
+    if not r_matrix_full.empty:
+        min_start2 = int(r_matrix_full.index.min())
+        max_start2 = int(r_matrix_full.index.max())
+        lag_r_full, lag_p_full = _mask_lag_matrix_outside_start2_range(
+            lag_r_full,
+            lag_p_full,
+            min_start2=min_start2,
+            max_start2=max_start2,
+        )
+
+    lag_r_matrix = _downsample_matrix_columns(lag_r_full, request.heatmap_step)
+    lag_p_matrix = _downsample_matrix_columns(lag_p_full, request.heatmap_step)
+    lag_p_matrix = lag_p_matrix.reindex(index=lag_r_matrix.index, columns=lag_r_matrix.columns)
+
+    lag_default: int | None
+    if lag_r_matrix.empty:
+        lag_default = None
+    else:
+        lag_values = [int(v) for v in lag_r_matrix.index.to_numpy()]
+        if 0 in lag_values:
+            lag_default = 0
+        else:
+            lag_default = min(lag_values, key=lambda value: abs(value))
+
     lag0_corr = pd.Series(ts1, dtype=float).corr(pd.Series(ts2, dtype=float), method=request.method)
 
     summary = {
@@ -1681,6 +1761,9 @@ def run_sdc_job(
         },
         "matrix_r": _matrix_payload(r_matrix),
         "matrix_p": _matrix_payload(p_matrix),
+        "lag_matrix_r": _matrix_payload(lag_r_matrix),
+        "lag_matrix_p": _matrix_payload(lag_p_matrix),
+        "lag_default": lag_default,
         "strongest_links": strongest.to_dict(orient="records") if not strongest.empty else [],
         "notes": notes,
         "runtime_seconds": float(runtime_seconds),

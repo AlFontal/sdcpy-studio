@@ -104,6 +104,82 @@ test("dataset workflow runs analysis and renders outputs", async ({ page }, test
     expect(plotChecks.xAxisRange?.[0]).toBeCloseTo(-0.5, 6);
     expect(plotChecks.xAxisRange?.[1]).toBeCloseTo(71.5, 6);
   }
+
+  const matrixTab = page.getByTestId("sdc-explorer-tab-matrix");
+  const lagTab = page.getByTestId("sdc-explorer-tab-lag");
+  await expect(matrixTab).toHaveAttribute("aria-selected", "true");
+  await expect(lagTab).toBeEnabled();
+  await lagTab.click();
+  await expect(lagTab).toHaveAttribute("aria-selected", "true");
+  await expect(matrixTab).toHaveAttribute("aria-selected", "false");
+
+  const lagExplorer = page.getByTestId("two-way-lag-explorer");
+  await expect(lagExplorer).toBeVisible();
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const container = document.getElementById("two_way_lag_explorer");
+        if (!container) {
+          return false;
+        }
+        const renderedPlot = container.matches(".js-plotly-plot") || !!container.querySelector(".js-plotly-plot");
+        const fallbackText = (container.textContent ?? "").includes("Plotly library unavailable");
+        return renderedPlot || fallbackText;
+      });
+    })
+    .toBe(true);
+
+  await expect(page.getByTestId("plot-lag-focus-slider")).toHaveValue("0");
+  await expect(page.getByTestId("plot-lag-focus-number-input")).toHaveValue("0");
+
+  const initialLagTraceName = await page.evaluate(() => {
+    const gd = document.querySelector(
+      "#two_way_lag_explorer.js-plotly-plot, #two_way_lag_explorer .js-plotly-plot"
+    ) as ({ data?: Array<{ name?: string }> } & Element) | null;
+    if (!gd || !Array.isArray(gd.data)) {
+      return "";
+    }
+    const trace = gd.data.find((item) => String(item?.name ?? "").includes("Focused lag r"));
+    return String(trace?.name ?? "");
+  });
+  expect(initialLagTraceName).toContain("lag=0");
+
+  await page.getByTestId("plot-lag-focus-slider").evaluate((element) => {
+    const input = element as any;
+    input.value = "3";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.getByTestId("plot-lag-focus-number-input")).toHaveValue("3");
+
+  const updatedLagTraceName = await page.evaluate(() => {
+    const gd = document.querySelector(
+      "#two_way_lag_explorer.js-plotly-plot, #two_way_lag_explorer .js-plotly-plot"
+    ) as ({ data?: Array<{ name?: string }> } & Element) | null;
+    if (!gd || !Array.isArray(gd.data)) {
+      return "";
+    }
+    const trace = gd.data.find((item) => String(item?.name ?? "").includes("Focused lag r"));
+    return String(trace?.name ?? "");
+  });
+  expect(updatedLagTraceName).toContain("lag=3");
+
+  await page.getByTestId("plot-alpha-input").evaluate((element) => {
+    const input = element as any;
+    input.value = "0.001";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(page.getByTestId("plot-alpha-input")).toHaveValue("0.001");
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const gd = document.querySelector(
+          "#two_way_lag_explorer.js-plotly-plot, #two_way_lag_explorer .js-plotly-plot"
+        ) as ({ layout?: { annotations?: Array<{ text?: string }> } } & Element) | null;
+        const annotationText = gd?.layout?.annotations?.[0]?.text;
+        return String(annotationText ?? "");
+      });
+    })
+    .toContain("alpha <= 0.001");
 });
 
 test("oni sample can be loaded without uploading a file", async ({ page }) => {
