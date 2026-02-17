@@ -334,16 +334,13 @@
           <div class="explorer-shell" id="workflow_map" role="tabpanel">
             <aside class="explorer-controls">
               <div class="plot-controls">
-                <div class="map-controls-grid">
+                <div class="map-controls-grid map-controls-grid-primary">
                   <label>Driver dataset
                     <select id="map_driver_dataset">
                       <option value="pdo">pdo</option>
                       <option value="nao">nao</option>
                       <option value="nino34">nino34</option>
                     </select>
-                    <span id="map_driver_dataset_meta" class="map-select-meta">
-                      Loading driver metadata...
-                    </span>
                   </label>
                   <label>Field dataset
                     <select id="map_field_dataset">
@@ -351,9 +348,6 @@
                       <option value="ersstv5_sst">ersstv5_sst</option>
                       <option value="oisst_v2_sst">oisst_v2_sst</option>
                     </select>
-                    <span id="map_field_dataset_meta" class="map-select-meta">
-                      Loading field metadata...
-                    </span>
                   </label>
                   <label>Fragment size
                     <input id="map_fragment_size" type="number" min="2" value="12" />
@@ -367,6 +361,16 @@
                   <label>Permutations
                     <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
                   </label>
+                </div>
+                <div class="map-dataset-meta-row">
+                  <div id="map_driver_dataset_meta" class="map-meta-card">
+                    Loading driver metadata...
+                  </div>
+                  <div id="map_field_dataset_meta" class="map-meta-card">
+                    Loading field metadata...
+                  </div>
+                </div>
+                <div class="map-controls-grid map-controls-grid-secondary">
                   <label>Min lag
                     <input id="map_min_lag" type="number" value="-6" />
                   </label>
@@ -382,27 +386,28 @@
                   <label>Peak date
                     <input id="map_peak_date" type="date" value="" />
                   </label>
-                  <label>Lat min (optional)
-                    <input id="map_lat_min" type="number" step="0.1" placeholder="full map" />
-                  </label>
-                  <label>Lat max (optional)
-                    <input id="map_lat_max" type="number" step="0.1" placeholder="full map" />
-                  </label>
-                  <label>Lon min (optional)
-                    <input id="map_lon_min" type="number" step="0.1" placeholder="full map" />
-                  </label>
-                  <label>Lon max (optional)
-                    <input id="map_lon_max" type="number" step="0.1" placeholder="full map" />
-                  </label>
                 </div>
-                <p id="map_bounds_notice" class="hint map-bounds-alert">
-                  No bounds selected: full map will be computed. Draw a rectangle on the map (modebar) or fill bounds manually.
-                </p>
                 <div class="map-action-row">
-                  <button id="map_clear_bounds" class="btn secondary" type="button">Use full map bounds</button>
                   <button id="map_load" class="btn secondary" type="button">Load driver + dataset</button>
                   <button id="map_run" class="btn" type="button" disabled>Run SDC map</button>
                 </div>
+                <details class="map-manual-bounds">
+                  <summary>Manual bounds (optional)</summary>
+                  <div class="map-bounds-grid">
+                    <label>Lat min
+                      <input id="map_lat_min" type="number" step="0.1" placeholder="full map" />
+                    </label>
+                    <label>Lat max
+                      <input id="map_lat_max" type="number" step="0.1" placeholder="full map" />
+                    </label>
+                    <label>Lon min
+                      <input id="map_lon_min" type="number" step="0.1" placeholder="full map" />
+                    </label>
+                    <label>Lon max
+                      <input id="map_lon_max" type="number" step="0.1" placeholder="full map" />
+                    </label>
+                  </div>
+                </details>
                 <section class="map-progress" aria-label="Map job progress">
                   <div class="map-progress-meta">
                     <span id="map_progress_label">Idle</span>
@@ -435,10 +440,23 @@
             <div class="explorer-stage map-stage">
               <div id="map_phase_badge" class="map-phase-badge">Phase: idle</div>
               <div id="map_explore_controls" class="map-explore-controls" hidden>
-                <label>Date frame
-                  <input id="map_time_slider" type="range" min="0" max="0" step="1" value="0" />
-                </label>
-                <output id="map_time_slider_label">-</output>
+                <p id="map_bounds_notice" class="hint map-bounds-alert">
+                  No bounds selected: full map will be computed. Modebar: Draw rectangle sets bounds, Pan selects grid cells for the comparison series.
+                </p>
+                <div class="map-slider-row">
+                  <button id="map_time_play" class="btn secondary map-play-btn" type="button" aria-pressed="false" title="Play">
+                    ▶
+                  </button>
+                  <label class="map-slider-field">Date frame
+                    <input id="map_time_slider" type="range" min="0" max="0" step="1" value="0" />
+                  </label>
+                  <output id="map_time_slider_label">-</output>
+                  <label class="map-saturation-field">Saturation (abs)
+                    <input id="map_saturation" type="number" min="0.001" step="0.1" placeholder="auto" />
+                    <span id="map_saturation_meta" class="map-select-meta">Auto from field range.</span>
+                  </label>
+                  <button id="map_clear_bounds" class="btn secondary" type="button">Use full map bounds</button>
+                </div>
               </div>
               <div id="map_result_tabs" class="map-result-tabs" role="tablist" aria-label="SDC map layers" hidden></div>
               <div class="map-results-shell">

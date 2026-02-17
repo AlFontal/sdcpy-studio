@@ -477,7 +477,7 @@ textarea {
 
 .map-action-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -492,7 +492,17 @@ textarea {
 .map-controls-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
+}
+
+.map-dataset-meta-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.map-controls-grid-secondary {
+  align-items: end;
 }
 
 .plot-controls label {
@@ -509,6 +519,47 @@ textarea {
   font-size: 0.73rem;
   line-height: 1.35;
   color: var(--muted);
+}
+
+.map-meta-card {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fbff;
+  font-size: 0.73rem;
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.map-meta-card p {
+  margin: 0 0 6px;
+}
+
+.map-meta-card p:last-child {
+  margin-bottom: 0;
+}
+
+.map-meta-title {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.69rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.map-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.map-meta-chip {
+  border: 1px solid #d8e4f0;
+  border-radius: 999px;
+  background: #fff;
+  padding: 2px 8px;
+  font-size: 0.69rem;
+  color: #314154;
 }
 
 .plot-controls .btn {
@@ -567,6 +618,46 @@ textarea {
   font-size: 0.78rem;
   color: var(--ink);
   line-height: 1.42;
+}
+
+.map-manual-bounds {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.map-manual-bounds > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.map-manual-bounds > summary::-webkit-details-marker {
+  display: none;
+}
+
+.map-manual-bounds > summary::before {
+  content: "▶";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.16s ease;
+}
+
+.map-manual-bounds[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.map-bounds-grid {
+  border-top: 1px solid var(--line);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .range-field .range-meta {
@@ -681,9 +772,8 @@ textarea {
 .map-explore-controls {
   width: min(100%, 1240px);
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: end;
+  gap: 8px;
+  align-items: stretch;
 }
 
 .map-explore-controls label {
@@ -693,11 +783,41 @@ textarea {
   color: var(--muted);
 }
 
+.map-slider-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(170px, 230px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.map-slider-field {
+  display: grid;
+  gap: 6px;
+}
+
+.map-saturation-field {
+  display: grid;
+  gap: 6px;
+}
+
 .map-explore-controls output {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8rem;
   color: var(--ink);
   white-space: nowrap;
+}
+
+.map-explore-controls .btn {
+  width: auto;
+  min-width: 84px;
+}
+
+.map-play-btn {
+  min-width: 46px;
+  padding: 10px 0;
+  font-size: 1rem;
+  line-height: 1;
+  text-align: center;
 }
 
 .map-result-tabs {
@@ -945,8 +1065,12 @@ th {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .workflow-map .map-controls-grid {
+  .workflow-map .map-controls-grid-primary {
     grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .workflow-map .map-controls-grid-secondary {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
@@ -1005,7 +1129,8 @@ th {
     grid-template-columns: 1fr;
   }
 
-  .map-controls-grid {
+  .map-controls-grid,
+  .map-dataset-meta-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1016,6 +1141,19 @@ th {
   .map-explore-controls {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .map-explore-controls .btn {
+    width: 100%;
+  }
+
+  .map-slider-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .map-bounds-grid {
+    grid-template-columns: 1fr;
   }
 
   .download-grid {
