@@ -1,176 +1,83 @@
 # sdcpy-studio
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Web App](https://img.shields.io/badge/web-sdcpy--studio-0b7285.svg)](https://github.com/AlFontal/sdcpy-studio)
 [![Engine](https://img.shields.io/badge/engine-sdcpy-111827.svg)](https://github.com/AlFontal/sdcpy)
-[![Framework](https://img.shields.io/badge/framework-FastAPI-059669.svg)](https://fastapi.tiangolo.com/)
-[![Deploy](https://img.shields.io/badge/deploy-Render-46E3B7.svg)](https://render.com/)
+[![Map Engine](https://img.shields.io/badge/map-sdcpy--map-1f7a8c.svg)](https://github.com/AlFontal/sdcpy-map)
 
-<img src="https://raw.githubusercontent.com/AlFontal/sdcpy-app/master/static/sdcpy_logo_black.png" width="180" alt="sdcpy logo" />
+`sdcpy-studio` is a web app for interactive scale-dependent correlation analysis of time series.
 
-Interactive web studio for Scale-Dependent Correlation (SDC) analysis powered by [`sdcpy`](https://github.com/AlFontal/sdcpy).
+It offers two workflows:
+- `2-Way SDC`: fast exploratory correlation analysis for paired time series.
+- `SDC Map (beta)`: map-based exploration and SDC map computation over gridded fields.
 
-+ Free software: MIT license
-+ Repository: https://github.com/AlFontal/sdcpy-studio
+## Visual Tour
+### Home and main workflow
+![sdcpy-studio home](docs/images/studio-home.png)
 
-## Features
+### SDC Map exploration
+![sdcpy-studio map workflow](docs/images/studio-map-explore.png)
 
-- Dataset-first workflow (CSV upload, date/numeric inference, TS1/TS2 mapping)
-- Optional paste-values workflow with automatic validation
-- Asynchronous SDC jobs with status polling
-- Interactive 2-way SDC explorer with hover-linked fragment highlighting
-- Significant-mask visualization + on-hover non-significant (`NS`) feedback
-- Downloadable artifacts (`.xlsx`, `.png`, `.svg`) with contextual filenames
-- Built-in ONI demo dataset bootstrap
-
-## Installation
-
-Clone and install with [`uv`](https://docs.astral.sh/uv/):
-
+## Quick Start (Local)
+### 1) Install dependencies
 ```bash
 git clone https://github.com/AlFontal/sdcpy-studio.git
 cd sdcpy-studio
-uv sync --extra dev
-```
-
-To enable the SDC Map workflow locally:
-
-```bash
 uv sync --extra dev --extra map
 ```
 
-`sdcpy-map` is public, so no GitHub token or private index setup is required.
-
-Prewarm local map datasets cache (recommended before testing map workflows):
-
-```bash
-npm run cache:map
-```
-
-If one large field file fails mid-download, retry only that dataset:
-
-```bash
-npm run cache:map -- --field-key ersstv5_sst
-```
-
-This downloads all offered map datasets into:
-- `SDCPY_STUDIO_SDCPY_MAP_DATA_DIR` (if set), or
-- `~/.cache/sdcpy-studio/sdcpy-map`
-
-## Run Locally
-
+### 2) Run the app
 ```bash
 npm run dev:api
 ```
 
-Open `http://127.0.0.1:8000`.
+Open: `http://127.0.0.1:8000`
 
-## Docker
+## Docker Compose Deployment
+`docker-compose.yml` is the easiest way to deploy and keep a persistent dataset cache.
 
-Default image build (includes SDC Map dependencies and uses `uv` in-container):
-
-```bash
-docker build -t sdcpy-studio .
-```
-
-Run on a Linux server:
-
-```bash
-docker run -d \
-  --name sdcpy-studio \
-  --restart unless-stopped \
-  -p 8000:8000 \
-  -e SDCPY_STUDIO_MAX_WORKERS=2 \
-  sdcpy-studio
-```
-
-Image includes a healthcheck on `/health`.
-
-### Docker Compose (recommended)
-
-The repository includes `docker-compose.yml` with:
-- `sdcpy-studio` web service on host port `8050`
-- persistent named volume `sdcpy_map_cache` for map datasets
-- optional `cache-map` tool service to prewarm datasets
-
-Start/upgrade the app:
-
+### Start / update
 ```bash
 docker compose up -d --build
 ```
 
 Open: `http://127.0.0.1:8050`
 
-Prewarm map cache via compose:
-
+### Prewarm map datasets (recommended)
 ```bash
 docker compose --profile tools run --rm cache-map
 ```
 
-Prewarm a single heavy field dataset only:
-
-```bash
-docker compose --profile tools run --rm cache-map \
-  python /app/scripts/prewarm-map-cache.py --field-key ersstv5_sst
-```
-
-Stop services:
-
+### Stop
 ```bash
 docker compose down
 ```
 
-Stop services and remove cached datasets:
-
+### Stop + remove cache volume
 ```bash
 docker compose down -v
 ```
 
-To build a lighter image without map dependencies:
+## What You Can Do
+- Upload CSV data or paste two series directly.
+- Run asynchronous analysis and monitor progress.
+- Explore 2-way SDC outputs interactively.
+- Use SDC Map exploration with date slider, map bounds, and grid-cell comparison.
+- Download outputs for reports and sharing.
 
-```bash
-docker build -t sdcpy-studio-map \
-  --build-arg INSTALL_MAP_DEPS=0 \
-  .
-```
-
-Notes:
-- `sdcpy-map` is installed from the public GitHub repo in the `map` extra.
-- Container dependency installation is performed with `uv sync --frozen`.
-- Default build sets `INSTALL_MAP_DEPS=1`, so SDC Map is available out of the box.
-- With `INSTALL_MAP_DEPS=0`, the app still runs but the SDC Map tab returns a dependency error until map deps are installed.
-- You can prewarm the runtime dataset cache with `npm run cache:map` (or use the compose `cache-map` service).
-
-## API Endpoints
-
-- `GET /health`
-- `GET /api/v1/health`
-- `GET /api/v1/examples/synthetic`
-- `GET /api/v1/examples/oni-dataset`
-- `GET /api/v1/examples/oni-dataset.csv`
-- `POST /api/v1/datasets/inspect`
-- `POST /api/v1/jobs/sdc`
-- `POST /api/v1/jobs/sdc/csv`
-- `POST /api/v1/jobs/sdc/dataset`
-- `GET /api/v1/jobs/{job_id}`
-- `GET /api/v1/jobs/{job_id}/result`
-- `GET /api/v1/jobs/{job_id}/download/{fmt}` (`fmt` in `xlsx|png|svg`)
-
-## Render Deployment
-
-Render deployment is configured via `render.yaml` in this repository.
-
-After creating a new **Web Service** on Render and connecting this repo:
-
-1. Select `render.yaml` blueprint deploy (recommended), or create a Python Web Service manually.
-2. Use start command:
-   `uvicorn sdcpy_studio.main:create_app --factory --host 0.0.0.0 --port $PORT`
-3. Set health check path to `/health`.
+## Tech Stack
+- FastAPI backend
+- Vanilla JS + Plotly frontend
+- `sdcpy` and `sdcpy-map` computational engines
+- `uv` for dependency management
 
 ## Development
-
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra map
 ruff check .
 uv run pytest -q
 npm run test:e2e:with-api
 ```
+
+## License
+MIT
