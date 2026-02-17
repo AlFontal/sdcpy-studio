@@ -76,6 +76,7 @@ const mapProgressEta = document.getElementById("map_progress_eta");
 const mapPhaseBadge = document.getElementById("map_phase_badge");
 const mapExploreControls = document.getElementById("map_explore_controls");
 const mapTimeSlider = document.getElementById("map_time_slider");
+const mapTimePlayButton = document.getElementById("map_time_play");
 const mapTimeSliderLabel = document.getElementById("map_time_slider_label");
 const mapResultTabs = document.getElementById("map_result_tabs");
 const mapPlot = document.getElementById("sdc_map_plot");
@@ -86,6 +87,8 @@ const mapDownloadNcButton = document.getElementById("map_download_nc");
 const mapDatasetDocsContent = document.getElementById("map_dataset_docs_content");
 const mapDriverDatasetMeta = document.getElementById("map_driver_dataset_meta");
 const mapFieldDatasetMeta = document.getElementById("map_field_dataset_meta");
+const mapSaturationInput = document.getElementById("map_saturation");
+const mapSaturationMeta = document.getElementById("map_saturation_meta");
 
 let activePoll = null;
 let latestResult = null;
@@ -117,9 +120,23 @@ let mapActiveTab = 0;
 let mapCellSeriesCache = new Map();
 let mapDownloadsEnabled = false;
 let mapBoundsShapeSync = false;
+let mapTimePlayTimer = null;
+let mapTimePlaying = false;
 let heatmapStepManuallyOverridden = false;
 let latestValidatedSeriesLength = 0;
 let mapDatasetCatalog = null;
+
+const MAP_DRIVER_LABEL_OVERRIDES = {
+  pdo: "Pacific Decadal Oscillation (PDO)",
+  nao: "North Atlantic Oscillation (NAO)",
+  nino34: "Nino 3.4 anomaly",
+};
+
+const MAP_FIELD_LABEL_OVERRIDES = {
+  ncep_air: "Near-surface air temperature anomaly",
+  ersstv5_sst: "Sea-surface temperature anomaly (ERSSTv5)",
+  oisst_v2_sst: "Sea-surface temperature anomaly (OISSTv2)",
+};
 
 const RD_BU_WHITE_CENTER = [
   [0.0, "#053061"],
@@ -418,6 +435,9 @@ function setMapStatus(message, isError = false) {
 
 function setMapPhase(nextPhase) {
   mapPhase = nextPhase || "idle";
+  if (mapPhase !== "explore") {
+    stopMapTimePlayback();
+  }
   if (mapPhaseBadge) {
     mapPhaseBadge.textContent = `Phase: ${mapPhase}`;
   }
@@ -522,12 +542,12 @@ function updateMapBoundsNotice() {
     const bounds = getMapBoundsSelection();
     if (!bounds.hasBounds) {
       mapBoundsNotice.textContent =
-        "No bounds selected: full map will be computed. Draw a rectangle on the map (modebar) or fill bounds manually.";
+        "No bounds selected: full map will be computed. Modebar: Draw rectangle sets bounds, Pan selects grid cells for the comparison series.";
       return;
     }
     mapBoundsNotice.textContent =
       `Selected bounds: lat [${bounds.lat_min.toFixed(2)}, ${bounds.lat_max.toFixed(2)}], ` +
-      `lon [${bounds.lon_min.toFixed(2)}, ${bounds.lon_max.toFixed(2)}].`;
+      `lon [${bounds.lon_min.toFixed(2)}, ${bounds.lon_max.toFixed(2)}]. Modebar: Draw rectangle edits bounds, Pan selects grid cells.`;
   } catch (error) {
     mapBoundsNotice.textContent = String(error);
   }
@@ -665,11 +685,135 @@ function getMapConfig() {
   };
 }
 
+function parseMapSaturationValue() {
+  if (!mapSaturationInput) {
+    return null;
+  }
+  const raw = String(mapSaturationInput.value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function toSentenceCase(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function mapAxisDriverLabel(driverKey, driverMeta) {
+  const key = String(driverKey || "").trim();
+  if (MAP_DRIVER_LABEL_OVERRIDES[key]) {
+    return MAP_DRIVER_LABEL_OVERRIDES[key];
+  }
+  const desc = String(driverMeta?.description || "").replace(/\.$/, "").trim();
+  if (desc) {
+    return toSentenceCase(desc.replace(/^NOAA PSL\s+/i, ""));
+  }
+  return key || "Driver";
+}
+
+function mapAxisFieldLabel(fieldKey, fieldMeta) {
+  const key = String(fieldKey || "").trim();
+  if (MAP_FIELD_LABEL_OVERRIDES[key]) {
+    return MAP_FIELD_LABEL_OVERRIDES[key];
+  }
+  const desc = String(fieldMeta?.description || "").replace(/\.$/, "").trim();
+  if (desc) {
+    return toSentenceCase(desc.replace(/^NOAA\s+/i, ""));
+  }
+  const variable = String(fieldMeta?.variable || "").trim();
+  if (variable) {
+    return `${variable.toUpperCase()} anomaly`;
+  }
+  return key || "Selected cell";
+}
+
+function getMapAxisLabels(explore) {
+  const summaryDriver = String(explore?.summary?.driver_dataset || mapDriverDatasetInput?.value || "");
+  const summaryField = String(explore?.summary?.field_dataset || mapFieldDatasetInput?.value || "");
+  const { driver, field } = getSelectedMapDatasets();
+  return {
+    driverLabel: mapAxisDriverLabel(summaryDriver, driver),
+    fieldLabel: mapAxisFieldLabel(summaryField, field),
+  };
+}
+
+function stopMapTimePlayback() {
+  if (mapTimePlayTimer) {
+    clearInterval(mapTimePlayTimer);
+    mapTimePlayTimer = null;
+  }
+  mapTimePlaying = false;
+  if (mapTimePlayButton) {
+    mapTimePlayButton.textContent = "▶";
+    mapTimePlayButton.title = "Play";
+    mapTimePlayButton.setAttribute("aria-pressed", "false");
+  }
+}
+
+function startMapTimePlayback() {
+  if (!latestMapExplore || mapPhase !== "explore") {
+    return;
+  }
+  stopMapTimePlayback();
+  mapTimePlaying = true;
+  if (mapTimePlayButton) {
+    mapTimePlayButton.textContent = "⏸";
+    mapTimePlayButton.title = "Pause";
+    mapTimePlayButton.setAttribute("aria-pressed", "true");
+  }
+  mapTimePlayTimer = setInterval(() => {
+    const maxIndex = Math.max(0, (latestMapExplore.time_index?.length || 1) - 1);
+    if (maxIndex <= 0) {
+      stopMapTimePlayback();
+      return;
+    }
+    if (mapSelectedTimeIndex >= maxIndex) {
+      stopMapTimePlayback();
+      return;
+    }
+    updateExploreFrame(mapSelectedTimeIndex + 1);
+  }, 380);
+}
+
+function toggleMapTimePlayback() {
+  if (mapTimePlaying) {
+    stopMapTimePlayback();
+    return;
+  }
+  startMapTimePlayback();
+}
+
 function formatMetadataDateRange(start, end) {
   const s = String(start || "").trim();
   const e = String(end || "").trim();
   if (!s || !e) {
-    return "coverage unavailable";
+    return "";
+  }
+  return `${s} to ${e}`;
+}
+
+function formatShortIsoDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.includes("T") ? text.split("T")[0] : text;
+}
+
+function formatLoadedWindow(start, end) {
+  const s = formatShortIsoDate(start);
+  const e = formatShortIsoDate(end);
+  if (!s || !e) {
+    return "";
   }
   return `${s} to ${e}`;
 }
@@ -685,6 +829,29 @@ function formatBoundsSnippet(item) {
   return `Domain: lat [${latMin.toFixed(1)}, ${latMax.toFixed(1)}], lon [${lonMin.toFixed(
     1
   )}, ${lonMax.toFixed(1)}].`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderMetaCard(container, { title, description, chips }) {
+  if (!container) {
+    return;
+  }
+  const chipHtml = (chips || [])
+    .filter((chip) => chip && String(chip).trim())
+    .map((chip) => `<span class="map-meta-chip">${escapeHtml(chip)}</span>`)
+    .join("");
+  container.innerHTML =
+    `<p class="map-meta-title">${escapeHtml(title || "Metadata")}</p>` +
+    `<p>${escapeHtml(description || "")}</p>` +
+    `<div class="map-meta-chips">${chipHtml}</div>`;
 }
 
 function getSelectedMapDatasets() {
@@ -709,7 +876,8 @@ function renderMapSelectorOptions() {
       if (!entry) {
         return;
       }
-      option.textContent = `${entry.key} (${formatMetadataDateRange(entry.time_start, entry.time_end)})`;
+      const coverage = formatMetadataDateRange(entry.time_start, entry.time_end);
+      option.textContent = coverage ? `${entry.key} (${coverage})` : entry.key;
       option.title = entry.description || entry.key;
     });
   }
@@ -721,8 +889,10 @@ function renderMapSelectorOptions() {
         return;
       }
       const variableSuffix = entry.variable ? ` · ${entry.variable}` : "";
-      option.textContent =
-        `${entry.key}${variableSuffix} (${formatMetadataDateRange(entry.time_start, entry.time_end)})`;
+      const coverage = formatMetadataDateRange(entry.time_start, entry.time_end);
+      option.textContent = coverage
+        ? `${entry.key}${variableSuffix} (${coverage})`
+        : `${entry.key}${variableSuffix}`;
       option.title = entry.description || entry.key;
     });
   }
@@ -730,34 +900,72 @@ function renderMapSelectorOptions() {
 
 function renderMapSelectorMetadata() {
   if (!mapDatasetCatalog) {
-    if (mapDriverDatasetMeta) {
-      mapDriverDatasetMeta.textContent = "Driver metadata unavailable right now.";
-    }
-    if (mapFieldDatasetMeta) {
-      mapFieldDatasetMeta.textContent = "Field metadata unavailable right now.";
-    }
+    renderMetaCard(mapDriverDatasetMeta, {
+      title: "Driver metadata",
+      description: "Metadata unavailable right now.",
+      chips: [],
+    });
+    renderMetaCard(mapFieldDatasetMeta, {
+      title: "Field metadata",
+      description: "Metadata unavailable right now.",
+      chips: [],
+    });
     return;
   }
   const { driver, field } = getSelectedMapDatasets();
-  if (mapDriverDatasetMeta) {
-    if (!driver) {
-      mapDriverDatasetMeta.textContent = "Select a driver dataset.";
-    } else {
-      const description = driver.description || "No description available.";
-      const coverage = formatMetadataDateRange(driver.time_start, driver.time_end);
-      mapDriverDatasetMeta.textContent = `${description} Coverage: ${coverage}.`;
-    }
+  if (!driver) {
+    renderMetaCard(mapDriverDatasetMeta, {
+      title: "Driver metadata",
+      description: "Select a driver dataset.",
+      chips: [],
+    });
+  } else {
+    const coverage = formatMetadataDateRange(driver.time_start, driver.time_end);
+    const loadedWindow = formatLoadedWindow(
+      driver.loaded_time_start ?? latestMapExplore?.summary?.time_start,
+      driver.loaded_time_end ?? latestMapExplore?.summary?.time_end
+    );
+    const peakDate = driver.peak_date ? `Peak: ${driver.peak_date}` : "";
+    const points = Number.isFinite(Number(driver.n_points))
+      ? `${Number(driver.n_points).toLocaleString()} points`
+      : "";
+    const chips = [coverage ? `Coverage: ${coverage}` : loadedWindow ? `Loaded window: ${loadedWindow}` : "", points, peakDate];
+    renderMetaCard(mapDriverDatasetMeta, {
+      title: "Driver series",
+      description: driver.description || "No description available.",
+      chips,
+    });
   }
-  if (mapFieldDatasetMeta) {
-    if (!field) {
-      mapFieldDatasetMeta.textContent = "Select a field dataset.";
-    } else {
-      const description = field.description || "No description available.";
-      const coverage = formatMetadataDateRange(field.time_start, field.time_end);
-      const variable = field.variable ? `Variable: ${field.variable}. ` : "";
-      const bounds = formatBoundsSnippet(field);
-      mapFieldDatasetMeta.textContent = `${variable}${description} Coverage: ${coverage}. ${bounds}`.trim();
-    }
+
+  if (!field) {
+    renderMetaCard(mapFieldDatasetMeta, {
+      title: "Field metadata",
+      description: "Select a field dataset.",
+      chips: [],
+    });
+  } else {
+    const coverage = formatMetadataDateRange(field.time_start, field.time_end);
+    const loadedWindow = formatLoadedWindow(
+      field.loaded_time_start ?? latestMapExplore?.summary?.time_start,
+      field.loaded_time_end ?? latestMapExplore?.summary?.time_end
+    );
+    const variableChip = field.variable ? `Variable: ${field.variable}` : "";
+    const gridShape =
+      Number.isFinite(Number(field.n_lat)) && Number.isFinite(Number(field.n_lon))
+        ? `Grid: ${field.n_lat}×${field.n_lon}`
+        : "";
+    const domain = formatBoundsSnippet(field).replace(/^Domain:\s*/i, "");
+    const chips = [
+      coverage ? `Coverage: ${coverage}` : loadedWindow ? `Loaded window: ${loadedWindow}` : "",
+      variableChip,
+      gridShape,
+      domain,
+    ];
+    renderMetaCard(mapFieldDatasetMeta, {
+      title: "Field grid",
+      description: field.description || "No description available.",
+      chips,
+    });
   }
 }
 
@@ -775,8 +983,14 @@ function renderMapDatasetDocs() {
   const driverText = driver?.description || "No driver description available.";
   const fieldText = field?.description || "No field description available.";
   const variableSuffix = field?.variable ? ` (variable: ${field.variable})` : "";
-  const driverCoverage = formatMetadataDateRange(driver?.time_start, driver?.time_end);
-  const fieldCoverage = formatMetadataDateRange(field?.time_start, field?.time_end);
+  const driverCoverage =
+    formatMetadataDateRange(driver?.time_start, driver?.time_end) ||
+    formatLoadedWindow(driver?.loaded_time_start, driver?.loaded_time_end) ||
+    "available after load";
+  const fieldCoverage =
+    formatMetadataDateRange(field?.time_start, field?.time_end) ||
+    formatLoadedWindow(field?.loaded_time_start, field?.loaded_time_end) ||
+    "available after load";
   const domainText = formatBoundsSnippet(field);
   mapDatasetDocsContent.innerHTML =
     `<p><strong>Driver (${driverKey})</strong>: ${driverText}<br><span class="hint">Coverage: ${driverCoverage}</span></p>` +
@@ -824,6 +1038,20 @@ async function applyMapDriverDefaults(driverKey) {
   }
   if (mapTimeEndInput) {
     mapTimeEndInput.value = data.time_end || "";
+  }
+  if (mapDatasetCatalog?.drivers?.length) {
+    const entry = mapDatasetCatalog.drivers.find((item) => item.key === key);
+    if (entry) {
+      entry.time_start = data.driver_min_date || data.time_start || entry.time_start;
+      entry.time_end = data.driver_max_date || data.time_end || entry.time_end;
+      entry.peak_date = data.peak_date || entry.peak_date;
+      if (Number.isFinite(Number(data.n_points))) {
+        entry.n_points = Number(data.n_points);
+      }
+      renderMapSelectorOptions();
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+    }
   }
 }
 
@@ -2406,16 +2634,21 @@ function updateExploreSliderLabel(explore) {
   mapTimeSliderLabel.textContent = date;
 }
 
-function pickExploreColorSettings(minValue, maxValue) {
+function pickExploreColorSettings(minValue, maxValue, saturationAbs = null) {
   const min = Number(minValue);
   const max = Number(maxValue);
+  const sat = Number(saturationAbs);
+  const hasSat = Number.isFinite(sat) && sat > 0;
+
   if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) {
+    const defaultMax = Number.isFinite(max) ? Math.abs(max) : 1;
+    const usedSat = hasSat ? sat : Math.max(defaultMax, 1);
     return {
       colorscale: "cividis",
-      zmin: Number.isFinite(min) ? min : 0,
-      zmax: Number.isFinite(max) && max !== min ? max : 1,
+      zmin: Number.isFinite(min) ? Math.max(min, -usedSat) : 0,
+      zmax: usedSat,
       zmid: undefined,
-      colorbarTitle: "Field value (fixed)",
+      colorbarTitle: "Field value",
     };
   }
 
@@ -2426,22 +2659,27 @@ function pickExploreColorSettings(minValue, maxValue) {
   const useDiverging = hasPositive && hasNegative && centerSkew <= 0.35;
 
   if (useDiverging) {
-    const absBound = Math.max(Math.abs(min), Math.abs(max), 1e-6);
+    const absBound = hasSat ? sat : Math.max(Math.abs(min), Math.abs(max), 1e-6);
     return {
       colorscale: RD_BU_WHITE_CENTER,
       zmin: -absBound,
       zmax: absBound,
       zmid: 0,
-      colorbarTitle: "Field anomaly (fixed)",
+      colorbarTitle: "Field anomaly",
     };
   }
 
+  const clippedMin = hasSat ? Math.max(min, -sat) : min;
+  const clippedMax = hasSat ? Math.min(max, sat) : max;
+  const safeMin = clippedMin < clippedMax ? clippedMin : min;
+  const safeMax = clippedMin < clippedMax ? clippedMax : max;
+
   return {
     colorscale: "cividis",
-    zmin: min,
-    zmax: max,
+    zmin: safeMin,
+    zmax: safeMax,
     zmid: undefined,
-    colorbarTitle: "Field value (fixed)",
+    colorbarTitle: "Field value",
   };
 }
 
@@ -2468,8 +2706,7 @@ async function renderMapExploration(explore) {
   const selectedSeries = selectedSeriesRaw.map((value) =>
     typeof value === "number" && Number.isFinite(value) ? value : null
   );
-  const driverLabel = String(explore?.summary?.driver_dataset || "Driver");
-  const fieldLabel = String(explore?.summary?.field_dataset || "Selected cell");
+  const { driverLabel, fieldLabel } = getMapAxisLabels(explore);
   const currentFrame = frames[mapSelectedTimeIndex] || [];
   const currentDate = timeIndex[mapSelectedTimeIndex] || "NA";
 
@@ -2491,7 +2728,15 @@ async function renderMapExploration(explore) {
     fixedMin = Number.isFinite(localMin) ? localMin : -1;
     fixedMax = Number.isFinite(localMax) ? localMax : 1;
   }
-  const colorSettings = pickExploreColorSettings(fixedMin, fixedMax);
+  const autoAbsSaturation = Math.max(Math.abs(fixedMin), Math.abs(fixedMax), 1e-6);
+  const customSaturation = parseMapSaturationValue();
+  const usedSaturation = customSaturation ?? autoAbsSaturation;
+  if (mapSaturationMeta) {
+    mapSaturationMeta.textContent = customSaturation
+      ? "Manual saturation override."
+      : "Auto from field range.";
+  }
+  const colorSettings = pickExploreColorSettings(fixedMin, fixedMax, usedSaturation);
   const fieldLatMin = Number(explore?.summary?.field_lat_min);
   const fieldLatMax = Number(explore?.summary?.field_lat_max);
   const fieldLonMin = Number(explore?.summary?.field_lon_min);
@@ -2705,6 +2950,14 @@ async function renderMapExploration(explore) {
     setMapBoundsInputs(nextBounds);
     invalidateMapPreparation();
     await syncExploreBoundsShape(nextBounds);
+    // After drawing bounds, switch to pan so users can click heatmap cells to inspect series.
+    mapBoundsShapeSync = true;
+    try {
+      await Plotly.relayout(mapPlot, { dragmode: "pan" });
+    } finally {
+      mapBoundsShapeSync = false;
+    }
+    setMapStatus("Bounds updated. Click heatmap cells to inspect local series.", false);
   });
 
   if (mapTimeSlider) {
@@ -2712,6 +2965,9 @@ async function renderMapExploration(explore) {
     mapTimeSlider.max = String(Math.max(0, timeIndex.length - 1));
     mapTimeSlider.step = "1";
     mapTimeSlider.value = String(mapSelectedTimeIndex);
+  }
+  if (mapTimePlayButton) {
+    mapTimePlayButton.disabled = timeIndex.length <= 1;
   }
   updateExploreSliderLabel(explore);
   setSelectedCellSummary(explore, mapSelectedCell.latIndex, mapSelectedCell.lonIndex);
@@ -2729,6 +2985,9 @@ function updateExploreFrame(index) {
   Plotly.relayout(mapPlot, { "annotations[0].text": `Field map @ ${dateLabel}` });
   if (mapTimeSlider) {
     mapTimeSlider.value = String(mapSelectedTimeIndex);
+  }
+  if (mapTimePlaying && mapSelectedTimeIndex >= maxIndex) {
+    stopMapTimePlayback();
   }
   updateExploreSliderLabel(latestMapExplore);
   if (mapSelectedCell) {
@@ -2925,6 +3184,7 @@ async function submitMapExplore() {
   if (mapLoadBusy || mapRunBusy) {
     return;
   }
+  stopMapTimePlayback();
   setWorkflowTab("map");
   setMapLoadBusy(true);
   mapDownloadsEnabled = false;
@@ -2950,6 +3210,46 @@ async function submitMapExplore() {
       throw new Error(data.detail || "Unable to load map exploration.");
     }
     latestMapExplore = data.result;
+    const summary = latestMapExplore?.summary || {};
+    if (mapDatasetCatalog?.drivers?.length) {
+      const driverKey = String(summary.driver_dataset || mapDriverDatasetInput?.value || "");
+      const driverEntry = mapDatasetCatalog.drivers.find((item) => item.key === driverKey);
+      if (driverEntry) {
+        driverEntry.loaded_time_start = summary.time_start || driverEntry.loaded_time_start;
+        driverEntry.loaded_time_end = summary.time_end || driverEntry.loaded_time_end;
+        if (summary.peak_date) {
+          driverEntry.peak_date = summary.peak_date;
+        }
+      }
+    }
+    if (mapDatasetCatalog?.fields?.length) {
+      const fieldKey = String(summary.field_dataset || mapFieldDatasetInput?.value || "");
+      const fieldEntry = mapDatasetCatalog.fields.find((item) => item.key === fieldKey);
+      if (fieldEntry) {
+        fieldEntry.loaded_time_start = summary.time_start || fieldEntry.loaded_time_start;
+        fieldEntry.loaded_time_end = summary.time_end || fieldEntry.loaded_time_end;
+        if (Number.isFinite(Number(summary.n_lat))) {
+          fieldEntry.n_lat = Number(summary.n_lat);
+        }
+        if (Number.isFinite(Number(summary.n_lon))) {
+          fieldEntry.n_lon = Number(summary.n_lon);
+        }
+        if (Number.isFinite(Number(summary.field_lat_min))) {
+          fieldEntry.lat_min = Number(summary.field_lat_min);
+        }
+        if (Number.isFinite(Number(summary.field_lat_max))) {
+          fieldEntry.lat_max = Number(summary.field_lat_max);
+        }
+        if (Number.isFinite(Number(summary.field_lon_min))) {
+          fieldEntry.lon_min = Number(summary.field_lon_min);
+        }
+        if (Number.isFinite(Number(summary.field_lon_max))) {
+          fieldEntry.lon_max = Number(summary.field_lon_max);
+        }
+      }
+    }
+    renderMapSelectorMetadata();
+    renderMapDatasetDocs();
     if (mapPeakDateInput) {
       mapPeakDateInput.value = latestMapExplore?.summary?.peak_date || mapPeakDateInput.value;
     }
@@ -3047,6 +3347,7 @@ async function submitMapJob() {
   if (!latestMapExplore) {
     throw new Error("Load and explore driver + dataset first.");
   }
+  stopMapTimePlayback();
   setWorkflowTab("map");
   const config = getMapConfig();
   const response = await fetch("/api/v1/jobs/sdc-map", {
@@ -3277,7 +3578,13 @@ function attachHandlers() {
   }
   if (mapTimeSlider) {
     mapTimeSlider.addEventListener("input", () => {
+      stopMapTimePlayback();
       updateExploreFrame(Number(mapTimeSlider.value));
+    });
+  }
+  if (mapTimePlayButton) {
+    mapTimePlayButton.addEventListener("click", () => {
+      toggleMapTimePlayback();
     });
   }
 
@@ -3336,6 +3643,18 @@ function attachHandlers() {
     });
   });
 
+  if (mapSaturationInput) {
+    mapSaturationInput.addEventListener("input", () => {
+      if (mapPhase === "explore" && latestMapExplore) {
+        void renderMapExploration(latestMapExplore);
+      } else if (mapSaturationMeta) {
+        mapSaturationMeta.textContent = mapSaturationInput.value.trim()
+          ? "Manual saturation override."
+          : "Auto from field range.";
+      }
+    });
+  }
+
   window.addEventListener("resize", () => {
     if (activeWorkflowTab === "map" && mapPhase === "results" && latestMapResult) {
       if (mapResizeTimer) {
@@ -3369,7 +3688,8 @@ setMapPhase("idle");
 refreshMapRunButtonState();
 setMapStatus("Load datasets to start exploration, then run SDC map.");
 if (mapSelectedCellText) {
-  mapSelectedCellText.textContent = "Selected grid cell: none.";
+  mapSelectedCellText.textContent =
+    "Selected grid cell: none. Click the field heatmap to inspect a cell time series.";
 }
 updateMapBoundsNotice();
 attachHandlers();
