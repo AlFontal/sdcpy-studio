@@ -360,6 +360,257 @@ def inspect_dataset_csv(content: bytes, filename: str) -> tuple[pd.DataFrame, di
     return frame, metadata
 
 
+def _load_custom_driver_series_from_frame(
+    frame: pd.DataFrame,
+    *,
+    date_column: str,
+    value_column: str,
+    time_start: str | None = None,
+    time_end: str | None = None,
+) -> pd.Series:
+    if date_column not in frame.columns:
+        raise ValueError(f"Driver date column '{date_column}' not found in uploaded CSV.")
+    if value_column not in frame.columns:
+        raise ValueError(f"Driver value column '{value_column}' not found in uploaded CSV.")
+
+    parsed_dates = pd.to_datetime(frame[date_column], errors="coerce")
+    values = pd.to_numeric(frame[value_column], errors="coerce")
+    valid = parsed_dates.notna() & values.notna()
+    if not bool(valid.any()):
+        raise ValueError("Uploaded driver CSV does not contain valid datetime/value pairs.")
+
+    series = pd.Series(values.loc[valid].to_numpy(dtype=float), index=parsed_dates.loc[valid])
+    series = series.groupby(level=0).mean().sort_index()
+
+    if time_start:
+        series = series.loc[series.index >= pd.Timestamp(time_start)]
+    if time_end:
+        series = series.loc[series.index <= pd.Timestamp(time_end)]
+    if series.empty:
+        raise ValueError("Uploaded driver CSV has no values inside the selected time window.")
+    return series
+
+
+def load_custom_map_driver_series(
+    csv_path: Path | str,
+    *,
+    date_column: str,
+    value_column: str,
+    time_start: str | None = None,
+    time_end: str | None = None,
+) -> pd.Series:
+    frame = pd.read_csv(csv_path)
+    frame = frame.copy()
+    frame.columns = [str(col).strip() for col in frame.columns]
+    return _load_custom_driver_series_from_frame(
+        frame,
+        date_column=date_column,
+        value_column=value_column,
+        time_start=time_start,
+        time_end=time_end,
+    )
+
+
+def inspect_sdc_map_driver_csv(content: bytes, filename: str) -> dict:
+    """Inspect uploaded map-driver CSV and infer defaults for the map workflow."""
+    frame, metadata = inspect_dataset_csv(content, filename=filename)
+    if not metadata["datetime_columns"]:
+        raise ValueError("Driver CSV must contain a parseable date column.")
+    if not metadata["numeric_columns"]:
+        raise ValueError("Driver CSV must contain at least one numeric time-series column.")
+
+    date_column = str(metadata["suggested_date_column"] or metadata["datetime_columns"][0])
+    numeric_candidates = [str(col) for col in metadata["numeric_columns"] if col != date_column]
+    if not numeric_candidates:
+        numeric_candidates = [str(metadata["numeric_columns"][0])]
+    value_column = numeric_candidates[0]
+    driver_series = _load_custom_driver_series_from_frame(
+        frame,
+        date_column=date_column,
+        value_column=value_column,
+    )
+    defaults = _derive_driver_peak_window(driver_series, years=3)
+    return {
+        **metadata,
+        "suggested_date_column": date_column,
+        "suggested_value_column": value_column,
+        "defaults": defaults,
+    }
+
+
+def _open_netcdf_dataset(dataset_path: Path | str):
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        raise ValueError(
+            "NetCDF support requires xarray. Install optional dependencies with `pip install .[map]`."
+        ) from exc
+
+    last_error: Exception | None = None
+    for engine in (None, "h5netcdf", "netcdf4", "scipy"):
+        try:
+            if engine is None:
+                return xr.open_dataset(dataset_path)
+            return xr.open_dataset(dataset_path, engine=engine)
+        except Exception as exc:  # pragma: no cover - depends on installed backends
+            last_error = exc
+            continue
+    raise ValueError(f"Could not open NetCDF file '{Path(dataset_path).name}': {last_error}") from last_error
+
+
+def _pick_coord_name(candidates: list[str], names: list[str]) -> str | None:
+    name_map = {str(name).lower(): str(name) for name in names}
+    for candidate in candidates:
+        found = name_map.get(candidate.lower())
+        if found:
+            return found
+    return None
+
+
+def _normalize_custom_field_dataarray(data_array, *, apply_config=None):
+    dims = [str(dim) for dim in data_array.dims]
+    rename_map: dict[str, str] = {}
+    time_dim = _pick_coord_name(["time", "date", "datetime", "t"], dims)
+    lat_dim = _pick_coord_name(["lat", "latitude", "y"], dims)
+    lon_dim = _pick_coord_name(["lon", "longitude", "x"], dims)
+    if time_dim is None or lat_dim is None or lon_dim is None:
+        raise ValueError(
+            "Field variable must have time/lat/lon dimensions (accepted aliases: time/date, lat/latitude, lon/longitude)."
+        )
+    rename_map[time_dim] = "time"
+    rename_map[lat_dim] = "lat"
+    rename_map[lon_dim] = "lon"
+
+    da = data_array.rename(rename_map).transpose("time", "lat", "lon")
+
+    for coord_name in ("time", "lat", "lon"):
+        if coord_name not in da.coords:
+            raise ValueError(f"Field variable is missing required '{coord_name}' coordinate values.")
+
+    # Normalize and sort longitude into [-180, 180) when data appears in [0, 360].
+    lon_values = np.asarray(da["lon"].values, dtype=float)
+    if lon_values.size and np.nanmax(lon_values) > 180.0:
+        normalized = ((lon_values + 180.0) % 360.0) - 180.0
+        da = da.assign_coords(lon=normalized)
+
+    da = da.sortby("time").sortby("lat").sortby("lon")
+
+    if apply_config is not None:
+        if getattr(apply_config, "time_start", None) is not None or getattr(apply_config, "time_end", None) is not None:
+            try:
+                start = getattr(apply_config, "time_start", None) or None
+                end = getattr(apply_config, "time_end", None) or None
+                da = da.sel(time=slice(start, end))
+            except Exception:
+                pass
+        da = da.sel(
+            lat=slice(float(apply_config.lat_min), float(apply_config.lat_max)),
+            lon=slice(float(apply_config.lon_min), float(apply_config.lon_max)),
+        )
+        da = da.isel(
+            lat=slice(None, None, max(1, int(getattr(apply_config, "lat_stride", 1)))),
+            lon=slice(None, None, max(1, int(getattr(apply_config, "lon_stride", 1)))),
+        )
+
+    if int(da.sizes.get("time", 0)) <= 0 or int(da.sizes.get("lat", 0)) <= 0 or int(da.sizes.get("lon", 0)) <= 0:
+        raise ValueError("Selected field variable has no data after applying bounds/time filters.")
+
+    return da.astype(float)
+
+
+def inspect_sdc_map_field_netcdf(dataset_path: Path | str, filename: str) -> dict:
+    """Inspect an uploaded NetCDF and list compatible field variables."""
+    dataset = _open_netcdf_dataset(dataset_path)
+    try:
+        variables = [str(name) for name in dataset.data_vars]
+        compatible: list[str] = []
+        coverage_by_var: dict[str, dict[str, object]] = {}
+        for name in variables:
+            try:
+                da = _normalize_custom_field_dataarray(dataset[name])
+            except Exception:
+                continue
+            compatible.append(name)
+            time_values = np.asarray(da["time"].values)
+            parsed_dates = [_as_calendar_date(value) for value in time_values]
+            valid_dates = [value for value in parsed_dates if value is not None]
+            lat_vals = np.asarray(da["lat"].values, dtype=float)
+            lon_vals = np.asarray(da["lon"].values, dtype=float)
+            coverage_by_var[name] = {
+                "dims": {
+                    "time": int(da.sizes.get("time", 0)),
+                    "lat": int(da.sizes.get("lat", 0)),
+                    "lon": int(da.sizes.get("lon", 0)),
+                },
+                "time_start": min(valid_dates).isoformat() if valid_dates else None,
+                "time_end": max(valid_dates).isoformat() if valid_dates else None,
+                "lat_min": float(np.nanmin(lat_vals)) if lat_vals.size else None,
+                "lat_max": float(np.nanmax(lat_vals)) if lat_vals.size else None,
+                "lon_min": float(np.nanmin(lon_vals)) if lon_vals.size else None,
+                "lon_max": float(np.nanmax(lon_vals)) if lon_vals.size else None,
+            }
+        if not compatible:
+            raise ValueError(
+                "No compatible variable found in NetCDF. Expected a 3D variable with time/lat/lon dimensions."
+            )
+        suggested = compatible[0]
+        coverage = coverage_by_var.get(suggested, {})
+        return {
+            "filename": filename,
+            "variables": variables,
+            "compatible_variables": compatible,
+            "suggested_variable": suggested,
+            "dims": dict(coverage.get("dims") or {}),
+            "time_start": coverage.get("time_start"),
+            "time_end": coverage.get("time_end"),
+            "lat_min": coverage.get("lat_min"),
+            "lat_max": coverage.get("lat_max"),
+            "lon_min": coverage.get("lon_min"),
+            "lon_max": coverage.get("lon_max"),
+        }
+    finally:
+        try:
+            dataset.close()
+        except Exception:
+            pass
+
+
+def load_custom_map_field_subset(dataset_path: Path | str, *, variable: str, config):
+    dataset = _open_netcdf_dataset(dataset_path)
+    try:
+        if variable not in dataset.data_vars:
+            available = ", ".join(str(name) for name in dataset.data_vars)
+            raise ValueError(f"Field variable '{variable}' not found. Available variables: {available}.")
+        da = _normalize_custom_field_dataarray(dataset[variable], apply_config=config)
+        return da.load()
+    finally:
+        try:
+            dataset.close()
+        except Exception:
+            pass
+
+
+def get_custom_field_bounds(dataset_path: Path | str, *, variable: str) -> dict[str, float]:
+    dataset = _open_netcdf_dataset(dataset_path)
+    try:
+        if variable not in dataset.data_vars:
+            raise ValueError(f"Field variable '{variable}' not found in uploaded NetCDF.")
+        da = _normalize_custom_field_dataarray(dataset[variable])
+        lat_vals = np.asarray(da["lat"].values, dtype=float)
+        lon_vals = np.asarray(da["lon"].values, dtype=float)
+        return {
+            "lat_min": float(np.nanmin(lat_vals)),
+            "lat_max": float(np.nanmax(lat_vals)),
+            "lon_min": float(np.nanmin(lon_vals)),
+            "lon_max": float(np.nanmax(lon_vals)),
+        }
+    finally:
+        try:
+            dataset.close()
+        except Exception:
+            pass
+
+
 def build_job_request_from_dataset(
     dataframe: pd.DataFrame,
     request: SDCJobFromDatasetRequest,
@@ -1124,13 +1375,71 @@ def _resolve_map_bounds(
             False,
         )
 
-    field_bounds = _get_field_data_bounds(request.field_dataset, data_dir=data_dir)
+    if request.field_source_type == "upload":
+        if not request.field_upload_path or not request.field_variable:
+            raise ValueError("Uploaded field source is missing resolved path or variable selection.")
+        field_bounds = get_custom_field_bounds(
+            request.field_upload_path,
+            variable=request.field_variable,
+        )
+    else:
+        field_bounds = _get_field_data_bounds(request.field_dataset, data_dir=data_dir)
     return (
         float(field_bounds["lat_min"]),
         float(field_bounds["lat_max"]),
         float(field_bounds["lon_min"]),
         float(field_bounds["lon_max"]),
         True,
+    )
+
+
+def _is_catalog_driver(request: SDCMapJobRequest) -> bool:
+    return str(request.driver_source_type or "catalog") == "catalog"
+
+
+def _is_catalog_field(request: SDCMapJobRequest) -> bool:
+    return str(request.field_source_type or "catalog") == "catalog"
+
+
+def _resolve_map_paths_for_request(
+    request: SDCMapJobRequest,
+    *,
+    data_dir: Path,
+    progress_hook: Callable[[int, int, str], None] | None = None,
+    progress_start: int = 0,
+    progress_total: int = 1,
+) -> dict[str, Path]:
+    """Resolve any catalog-backed assets plus coastline, using cache when both sources are catalog."""
+    driver_catalog = _is_catalog_driver(request)
+    field_catalog = _is_catalog_field(request)
+
+    if driver_catalog and field_catalog:
+        cache_key = (str(data_dir.resolve()), request.driver_dataset, request.field_dataset)
+        with _MAP_DATA_PATH_CACHE_LOCK:
+            cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
+        if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
+            return cached_paths
+        paths = fetch_sdc_map_assets(
+            data_dir=data_dir,
+            driver_key=request.driver_dataset,
+            field_key=request.field_dataset,
+            progress_hook=progress_hook,
+            progress_start=progress_start,
+            progress_total=progress_total,
+        )
+        with _MAP_DATA_PATH_CACHE_LOCK:
+            _MAP_DATA_PATH_CACHE[cache_key] = paths
+        return paths
+
+    dummy_driver_key = request.driver_dataset if driver_catalog else "pdo"
+    dummy_field_key = request.field_dataset if field_catalog else "ncep_air"
+    return fetch_sdc_map_assets(
+        data_dir=data_dir,
+        driver_key=dummy_driver_key,
+        field_key=dummy_field_key,
+        progress_hook=progress_hook,
+        progress_start=progress_start,
+        progress_total=progress_total,
     )
 
 
@@ -1239,29 +1548,22 @@ def build_sdc_map_exploration(payload: dict) -> dict:
         request,
         data_dir=data_dir,
     )
-    cache_key = (
-        str(data_dir.resolve()),
-        request.driver_dataset,
-        request.field_dataset,
-    )
-    with _MAP_DATA_PATH_CACHE_LOCK:
-        cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
-    if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
-        paths = cached_paths
-    else:
-        paths = fetch_sdc_map_assets(
-            data_dir=data_dir,
-            driver_key=request.driver_dataset,
-            field_key=request.field_dataset,
-        )
-        with _MAP_DATA_PATH_CACHE_LOCK:
-            _MAP_DATA_PATH_CACHE[cache_key] = paths
+    paths = _resolve_map_paths_for_request(request, data_dir=data_dir)
 
-    full_driver = load_driver_series(
-        paths["driver"],
-        config=_full_driver_config(),
-        driver_key=request.driver_dataset,
-    )
+    if _is_catalog_driver(request):
+        full_driver = load_driver_series(
+            paths["driver"],
+            config=_full_driver_config(),
+            driver_key=request.driver_dataset,
+        )
+    else:
+        if not request.driver_upload_path or not request.driver_date_column or not request.driver_value_column:
+            raise ValueError("Uploaded driver is missing file path or selected columns.")
+        full_driver = load_custom_map_driver_series(
+            request.driver_upload_path,
+            date_column=request.driver_date_column,
+            value_column=request.driver_value_column,
+        )
     peak_date, time_start, time_end = _resolve_map_temporal_window(request, full_driver)
 
     config = SDCMapConfig(
@@ -1283,8 +1585,26 @@ def build_sdc_map_exploration(payload: dict) -> dict:
         lon_stride=request.lon_stride,
     )
 
-    driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
-    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    if _is_catalog_driver(request):
+        driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+    else:
+        driver = load_custom_map_driver_series(
+            request.driver_upload_path or "",
+            date_column=request.driver_date_column or "",
+            value_column=request.driver_value_column or "",
+            time_start=time_start,
+            time_end=time_end,
+        )
+    if _is_catalog_field(request):
+        mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    else:
+        if not request.field_upload_path or not request.field_variable:
+            raise ValueError("Uploaded field is missing file path or selected variable.")
+        mapped_field = load_custom_map_field_subset(
+            request.field_upload_path,
+            variable=request.field_variable,
+            config=config,
+        )
     driver = align_driver_to_field(driver, mapped_field)
     coastline = load_coastline(paths["coastline"])
     lats, lons = grid_coordinates(mapped_field)
@@ -1324,8 +1644,11 @@ def build_sdc_map_exploration(payload: dict) -> dict:
 
     return {
         "summary": {
-            "driver_dataset": request.driver_dataset,
-            "field_dataset": request.field_dataset,
+            "driver_dataset": request.driver_upload_filename or request.driver_dataset,
+            "field_dataset": request.field_upload_filename or request.field_dataset,
+            "driver_source_type": request.driver_source_type,
+            "field_source_type": request.field_source_type,
+            "field_variable": request.field_variable if request.field_source_type == "upload" else request.field_dataset,
             "time_start": time_start,
             "time_end": time_end,
             "peak_date": peak_date,
@@ -1399,48 +1722,30 @@ def run_sdc_map_job(
         progress_hook,
         1,
         initial_progress_total,
-        f"Ensuring driver dataset ({request.driver_dataset})",
+        f"Ensuring map assets ({request.driver_dataset} / {request.field_dataset})",
     )
-    cache_key = (
-        str(data_dir.resolve()),
-        request.driver_dataset,
-        request.field_dataset,
+    paths = _resolve_map_paths_for_request(
+        request,
+        data_dir=data_dir,
+        progress_hook=progress_hook,
+        progress_start=1,
+        progress_total=initial_progress_total,
     )
-    with _MAP_DATA_PATH_CACHE_LOCK:
-        cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
 
-    if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
-        _emit_progress(
-            progress_hook,
-            1,
-            initial_progress_total,
-            f"Using in-memory driver cache ({request.driver_dataset})",
-        )
-        _emit_progress(
-            progress_hook,
-            2,
-            initial_progress_total,
-            f"Using in-memory field cache ({request.field_dataset})",
-        )
-        _emit_progress(progress_hook, 3, initial_progress_total, "Using in-memory coastline cache")
-        paths = cached_paths
-    else:
-        paths = fetch_sdc_map_assets(
-            data_dir=data_dir,
+    if _is_catalog_driver(request):
+        full_driver = load_driver_series(
+            paths["driver"],
+            config=_full_driver_config(),
             driver_key=request.driver_dataset,
-            field_key=request.field_dataset,
-            progress_hook=progress_hook,
-            progress_start=1,
-            progress_total=initial_progress_total,
         )
-        with _MAP_DATA_PATH_CACHE_LOCK:
-            _MAP_DATA_PATH_CACHE[cache_key] = paths
-
-    full_driver = load_driver_series(
-        paths["driver"],
-        config=_full_driver_config(),
-        driver_key=request.driver_dataset,
-    )
+    else:
+        if not request.driver_upload_path or not request.driver_date_column or not request.driver_value_column:
+            raise ValueError("Uploaded driver is missing file path or selected columns.")
+        full_driver = load_custom_map_driver_series(
+            request.driver_upload_path,
+            date_column=request.driver_date_column,
+            value_column=request.driver_value_column,
+        )
     peak_date, time_start, time_end = _resolve_map_temporal_window(request, full_driver)
     config = SDCMapConfig(
         fragment_size=request.fragment_size,
@@ -1462,8 +1767,26 @@ def run_sdc_map_job(
     )
 
     _emit_progress(progress_hook, 4, initial_progress_total, "Loading and aligning series")
-    driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
-    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    if _is_catalog_driver(request):
+        driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+    else:
+        driver = load_custom_map_driver_series(
+            request.driver_upload_path or "",
+            date_column=request.driver_date_column or "",
+            value_column=request.driver_value_column or "",
+            time_start=time_start,
+            time_end=time_end,
+        )
+    if _is_catalog_field(request):
+        mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+    else:
+        if not request.field_upload_path or not request.field_variable:
+            raise ValueError("Uploaded field is missing file path or selected variable.")
+        mapped_field = load_custom_map_field_subset(
+            request.field_upload_path,
+            variable=request.field_variable,
+            config=config,
+        )
     driver = align_driver_to_field(driver, mapped_field)
     lats, lons = grid_coordinates(mapped_field)
 
@@ -1508,8 +1831,8 @@ def run_sdc_map_job(
         lats=lats,
         lons=lons,
         attrs={
-            "driver_dataset": request.driver_dataset,
-            "field_dataset": request.field_dataset,
+            "driver_dataset": request.driver_upload_filename or request.driver_dataset,
+            "field_dataset": request.field_upload_filename or request.field_dataset,
             "fragment_size": int(request.fragment_size),
             "alpha": float(request.alpha),
             "top_fraction": float(request.top_fraction),
@@ -1561,8 +1884,11 @@ def run_sdc_map_job(
     layer_maps = _build_map_layer_payload(layers=layers, lats=lats, lons=lons, coastline=coastline)
     return {
         "summary": {
-            "driver_dataset": request.driver_dataset,
-            "field_dataset": request.field_dataset,
+            "driver_dataset": request.driver_upload_filename or request.driver_dataset,
+            "field_dataset": request.field_upload_filename or request.field_dataset,
+            "driver_source_type": request.driver_source_type,
+            "field_source_type": request.field_source_type,
+            "field_variable": request.field_variable if request.field_source_type == "upload" else request.field_dataset,
             "time_start": time_start,
             "time_end": time_end,
             "peak_date": peak_date,

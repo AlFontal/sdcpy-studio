@@ -70,8 +70,20 @@ class SDCJobFromDatasetRequest(BaseModel):
 class SDCMapJobRequest(BaseModel):
     """Request body for launching a beta SDC map computation job."""
 
-    driver_dataset: Literal["pdo", "nao", "nino34"] = "pdo"
-    field_dataset: Literal["ncep_air", "ersstv5_sst", "oisst_v2_sst"] = "ncep_air"
+    driver_dataset: str = "pdo"
+    field_dataset: str = "ncep_air"
+    driver_source_type: Literal["catalog", "upload"] = "catalog"
+    field_source_type: Literal["catalog", "upload"] = "catalog"
+    driver_upload_id: str | None = None
+    driver_date_column: str | None = None
+    driver_value_column: str | None = None
+    field_upload_id: str | None = None
+    field_variable: str | None = None
+    # Server-populated resolved file paths for uploaded assets.
+    driver_upload_path: str | None = None
+    field_upload_path: str | None = None
+    driver_upload_filename: str | None = None
+    field_upload_filename: str | None = None
 
     fragment_size: int = Field(12, ge=2, le=256)
     n_permutations: int = Field(49, ge=1, le=999)
@@ -94,6 +106,26 @@ class SDCMapJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> SDCMapJobRequest:
+        if not str(self.driver_dataset).strip():
+            raise ValueError("`driver_dataset` must not be empty.")
+        if not str(self.field_dataset).strip():
+            raise ValueError("`field_dataset` must not be empty.")
+        if self.driver_source_type == "upload":
+            if not self.driver_upload_id:
+                raise ValueError("`driver_upload_id` is required when `driver_source_type` is 'upload'.")
+            if not self.driver_date_column:
+                raise ValueError(
+                    "`driver_date_column` is required when `driver_source_type` is 'upload'."
+                )
+            if not self.driver_value_column:
+                raise ValueError(
+                    "`driver_value_column` is required when `driver_source_type` is 'upload'."
+                )
+        if self.field_source_type == "upload":
+            if not self.field_upload_id:
+                raise ValueError("`field_upload_id` is required when `field_source_type` is 'upload'.")
+            if not self.field_variable:
+                raise ValueError("`field_variable` is required when `field_source_type` is 'upload'.")
         if self.min_lag > self.max_lag:
             raise ValueError("`min_lag` must be <= `max_lag`.")
         bounds = (self.lat_min, self.lat_max, self.lon_min, self.lon_max)
@@ -152,6 +184,38 @@ class DatasetInspectResponse(BaseModel):
     datetime_columns: list[str]
     suggested_date_column: str | None = None
     preview_rows: list[dict]
+
+
+class SDCMapDriverUploadInspectResponse(BaseModel):
+    """Inspection payload for a custom SDC map driver CSV upload."""
+
+    upload_id: str
+    filename: str
+    n_rows: int
+    columns: list[str]
+    numeric_columns: list[str]
+    datetime_columns: list[str]
+    suggested_date_column: str | None = None
+    suggested_value_column: str | None = None
+    preview_rows: list[dict]
+    defaults: dict
+
+
+class SDCMapFieldUploadInspectResponse(BaseModel):
+    """Inspection payload for a custom SDC map field NetCDF upload."""
+
+    upload_id: str
+    filename: str
+    variables: list[str]
+    compatible_variables: list[str]
+    suggested_variable: str | None = None
+    dims: dict[str, int]
+    time_start: str | None = None
+    time_end: str | None = None
+    lat_min: float | None = None
+    lat_max: float | None = None
+    lon_min: float | None = None
+    lon_max: float | None = None
 
 
 class MatrixPayload(BaseModel):

@@ -5,6 +5,8 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import RLock
 from uuid import uuid4
 
@@ -41,6 +43,18 @@ class DatasetRecord:
     dataframe: pd.DataFrame
 
 
+@dataclass
+class MapUploadRecord:
+    """In-memory record for one uploaded SDC map asset stored on disk."""
+
+    upload_id: str
+    kind: str
+    filename: str
+    created_at: datetime
+    path: Path
+    metadata: dict | None = None
+
+
 class JobManager:
     """Asynchronous job manager using a thread pool plus in-memory dataset storage."""
 
@@ -50,6 +64,9 @@ class JobManager:
         self._jobs: dict[str, JobRecord] = {}
         self._futures: dict[str, Future] = {}
         self._datasets: dict[str, DatasetRecord] = {}
+        self._map_uploads: dict[str, MapUploadRecord] = {}
+        self._tmpdir = TemporaryDirectory(prefix="sdcpy-studio-")
+        self._tmpdir_path = Path(self._tmpdir.name)
 
     def submit(self, request: SDCJobRequest) -> JobRecord:
         """Submit a new background computation."""
@@ -140,5 +157,36 @@ class JobManager:
         with self._lock:
             return self._datasets.get(dataset_id)
 
+    def register_map_upload(
+        self,
+        *,
+        kind: str,
+        filename: str,
+        content: bytes,
+        metadata: dict | None = None,
+    ) -> MapUploadRecord:
+        """Persist an uploaded map asset (CSV/NetCDF) to a temporary file."""
+        upload_id = uuid4().hex
+        safe_kind = str(kind or "asset").strip().lower()
+        suffix = Path(filename or "").suffix or (".csv" if safe_kind == "driver" else ".nc")
+        path = self._tmpdir_path / f"{safe_kind}_{upload_id}{suffix}"
+        path.write_bytes(content)
+        record = MapUploadRecord(
+            upload_id=upload_id,
+            kind=safe_kind,
+            filename=filename or path.name,
+            created_at=datetime.now(timezone.utc),
+            path=path,
+            metadata=dict(metadata or {}),
+        )
+        with self._lock:
+            self._map_uploads[upload_id] = record
+        return record
+
+    def get_map_upload(self, upload_id: str) -> MapUploadRecord | None:
+        with self._lock:
+            return self._map_uploads.get(upload_id)
+
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._tmpdir.cleanup()

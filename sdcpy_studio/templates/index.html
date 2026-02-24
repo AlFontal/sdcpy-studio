@@ -9,6 +9,21 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
   <link rel="shortcut icon" href="/static/favicon.svg" />
+  <script>
+    (() => {
+      try {
+        const key = "sdcpy-theme";
+        const saved = localStorage.getItem(key);
+        const theme = saved === "dark" || saved === "light"
+          ? saved
+          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      } catch (_error) {
+        // Keep first paint defaults if storage access is unavailable.
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/app.css" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -57,6 +72,10 @@
               </span>
             </a>
           </div>
+          <button id="theme_toggle" class="theme-toggle" type="button" aria-label="Toggle color theme">
+            <span class="theme-toggle-label">Theme</span>
+            <span id="theme_toggle_value" class="theme-toggle-value">Light</span>
+          </button>
         </div>
         <p>
           Web application for interactive scale-dependent correlation analysis of time series.
@@ -409,11 +428,23 @@
             <aside class="explorer-controls">
               <div class="plot-controls">
                 <div class="map-controls-grid map-controls-grid-primary">
+                  <label>Driver source
+                    <select id="map_driver_source" data-testid="map-driver-source-select">
+                      <option value="catalog">Catalog dataset</option>
+                      <option value="upload">Custom CSV upload</option>
+                    </select>
+                  </label>
                   <label>Driver dataset
                     <select id="map_driver_dataset">
                       <option value="pdo">pdo</option>
                       <option value="nao">nao</option>
                       <option value="nino34">nino34</option>
+                    </select>
+                  </label>
+                  <label>Field source
+                    <select id="map_field_source" data-testid="map-field-source-select">
+                      <option value="catalog">Catalog dataset</option>
+                      <option value="upload">Custom NetCDF upload</option>
                     </select>
                   </label>
                   <label>Field dataset
@@ -435,6 +466,55 @@
                   <label>Permutations
                     <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
                   </label>
+                </div>
+                <div class="map-upload-rows">
+                  <div class="map-upload-panel" id="map_driver_upload_panel">
+                    <p class="map-meta-title">Custom driver CSV</p>
+                    <div class="map-upload-grid">
+                      <label>CSV file
+                        <input
+                          id="map_driver_file"
+                          type="file"
+                          accept=".csv,text/csv"
+                          data-testid="map-driver-file-input"
+                        />
+                      </label>
+                      <label>Date column
+                        <select id="map_driver_date_col" data-testid="map-driver-date-select">
+                          <option value="">Upload CSV first</option>
+                        </select>
+                      </label>
+                      <label>Series column
+                        <select id="map_driver_value_col" data-testid="map-driver-value-select">
+                          <option value="">Upload CSV first</option>
+                        </select>
+                      </label>
+                    </div>
+                    <p id="map_driver_upload_status" class="hint map-upload-status" data-testid="map-driver-upload-status">
+                      Upload a CSV with a date column and one numeric time-series column.
+                    </p>
+                  </div>
+                  <div class="map-upload-panel" id="map_field_upload_panel">
+                    <p class="map-meta-title">Custom field NetCDF</p>
+                    <div class="map-upload-grid">
+                      <label>NetCDF file
+                        <input
+                          id="map_field_file"
+                          type="file"
+                          accept=".nc,.nc4,.cdf,application/x-netcdf"
+                          data-testid="map-field-file-input"
+                        />
+                      </label>
+                      <label>Variable
+                        <select id="map_field_variable" data-testid="map-field-variable-select">
+                          <option value="">Upload NetCDF first</option>
+                        </select>
+                      </label>
+                    </div>
+                    <p id="map_field_upload_status" class="hint map-upload-status" data-testid="map-field-upload-status">
+                      Upload a NetCDF with a 3D variable using time/lat/lon dimensions.
+                    </p>
+                  </div>
                 </div>
                 <div class="map-dataset-meta-row">
                   <div id="map_driver_dataset_meta" class="map-meta-card">

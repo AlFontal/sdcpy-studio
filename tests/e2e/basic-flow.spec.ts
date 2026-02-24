@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { writeFileSync } from "node:fs";
+import path from "node:path";
 
 function buildDatasetCsv(n: number): string {
   const rows = ["date,driver,mapped"];
@@ -198,4 +199,236 @@ test("oni sample can be loaded without uploading a file", async ({ page }) => {
   await expect(page.getByTestId("dataset-ts2-select")).toHaveValue("temp_anomaly_sa");
   await expect(page.getByTestId("dataset-run-button")).toBeEnabled();
   await expect(page.getByTestId("dataset-preview-details")).toHaveJSProperty("open", false);
+});
+
+test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async ({ page }) => {
+  const driverCsvPath = path.resolve("tests/fixtures/map_custom_driver.csv");
+  const fieldNcPath = path.resolve("tests/fixtures/map_custom_field.nc");
+
+  let exploreRequest: Record<string, unknown> | null = null;
+  let mapSubmitRequest: Record<string, unknown> | null = null;
+  let statusPollCount = 0;
+
+  await page.route("**/api/v1/sdc-map/explore", async (route) => {
+    exploreRequest = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "map_custom_driver.csv",
+            field_dataset: "map_custom_field.nc",
+            driver_source_type: "upload",
+            field_source_type: "upload",
+            field_variable: "sst_anom_custom",
+            time_start: "1998-01-01",
+            time_end: "2001-12-01",
+            peak_date: "2000-08-01",
+            n_time: 48,
+            n_lat: 5,
+            n_lon: 6,
+            valid_values: 1440,
+            valid_rate: 1.0,
+            first_valid_index: [0, 0, 0],
+            field_lat_min: -20,
+            field_lat_max: 20,
+            field_lon_min: -160,
+            field_lon_max: 180,
+            field_value_min: -2,
+            field_value_max: 2,
+            used_lat_min: -20,
+            used_lat_max: 20,
+            used_lon_min: -160,
+            used_lon_max: 180,
+            full_bounds_selected: true,
+          },
+          time_index: ["1998-01-01", "1998-02-01"],
+          driver_values: [0.1, 0.2],
+          lat: [-20, 0, 20],
+          lon: [-160, -140, -120],
+          field_frames: [
+            [
+              [0.1, 0.2, 0.3],
+              [0.2, 0.3, 0.4],
+              [0.3, 0.4, 0.5],
+            ],
+            [
+              [0.2, 0.3, 0.4],
+              [0.3, 0.4, 0.5],
+              [0.4, 0.5, 0.6],
+            ],
+          ],
+          coastline: { lat: [null], lon: [null] },
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    mapSubmitRequest = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "map-job-1",
+        status: "queued",
+        message: "ok",
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/map-job-1", async (route) => {
+    statusPollCount += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "map-job-1",
+        status: "succeeded",
+        created_at: "2026-02-23T00:00:00Z",
+        started_at: "2026-02-23T00:00:00Z",
+        completed_at: "2026-02-23T00:00:01Z",
+        progress: { current: 1, total: 1, description: "Completed" },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/map-job-1/result", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "map-job-1",
+        status: "succeeded",
+        result: {
+          summary: {
+            driver_dataset: "map_custom_driver.csv",
+            field_dataset: "map_custom_field.nc",
+            driver_source_type: "upload",
+            field_source_type: "upload",
+            field_variable: "sst_anom_custom",
+            time_start: "1998-01-01",
+            time_end: "2001-12-01",
+            peak_date: "2000-08-01",
+            fragment_size: 12,
+            n_permutations: 49,
+            alpha: 0.05,
+            top_fraction: 0.25,
+            min_lag: -6,
+            max_lag: 6,
+            lat_min: -20,
+            lat_max: 20,
+            lon_min: -160,
+            lon_max: 180,
+            lat_stride: 1,
+            lon_stride: 1,
+            n_time: 48,
+            n_lat: 5,
+            n_lon: 6,
+            total_cells: 30,
+            valid_cells: 30,
+            valid_cell_rate: 1.0,
+            field_lat_min: -20,
+            field_lat_max: 20,
+            field_lon_min: -160,
+            field_lon_max: 180,
+            positive_dominant_cells: 15,
+            negative_dominant_cells: 15,
+            mean_abs_corr: 0.42,
+            full_bounds_selected: true,
+          },
+          notes: [],
+          runtime_seconds: 1.2,
+          figure_png_base64:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
+          download_formats: ["png", "nc"],
+          layer_maps: {
+            lat: [-20, 0, 20],
+            lon: [-160, -140, -120],
+            coastline: { lat: [null], lon: [null] },
+            layers: [
+              {
+                key: "corr_mean",
+                label: "Mean extreme correlation",
+                colorscale: "RdBu",
+                zmin: -1,
+                zmax: 1,
+                values: [
+                  [0.1, 0.2, 0.3],
+                  [0.0, -0.1, -0.2],
+                  [0.2, 0.1, 0.0],
+                ],
+              },
+              {
+                key: "lag_mean",
+                label: "Mean lag (months)",
+                colorscale: "RdYlBu",
+                zmin: -6,
+                zmax: 6,
+                values: [
+                  [1, 2, 3],
+                  [0, -1, -2],
+                  [2, 1, 0],
+                ],
+              },
+              {
+                key: "driver_rel_time_mean",
+                label: "Mean driver-relative time (months)",
+                colorscale: "BrBG",
+                zmin: -6,
+                zmax: 6,
+                values: [
+                  [1, 1, 1],
+                  [0, 0, 0],
+                  [-1, -1, -1],
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /SDC Map/i }).click();
+
+  await page.getByTestId("map-driver-file-input").setInputFiles(driverCsvPath);
+  await expect(page.getByTestId("map-driver-upload-status")).toContainText("Ready:", { timeout: 20_000 });
+  await expect(page.getByTestId("map-driver-date-select")).toHaveValue("date");
+  await expect(page.getByTestId("map-driver-value-select")).toHaveValue("driver_index");
+
+  await page.getByTestId("map-field-file-input").setInputFiles(fieldNcPath);
+  await expect(page.getByTestId("map-field-upload-status")).toContainText("Ready:", { timeout: 20_000 });
+  await expect(page.getByTestId("map-field-variable-select")).toHaveValue("sst_anom_custom");
+
+  await expect(page.locator("#map_time_start")).toHaveValue(/\d{4}-\d{2}-\d{2}/);
+  await expect(page.locator("#map_peak_date")).toHaveValue(/\d{4}-\d{2}-\d{2}/);
+
+  await page.locator("#map_load").click();
+  await expect.poll(() => exploreRequest).not.toBeNull();
+  expect(exploreRequest?.driver_source_type).toBe("upload");
+  expect(exploreRequest?.field_source_type).toBe("upload");
+  expect(typeof exploreRequest?.driver_upload_id).toBe("string");
+  expect(typeof exploreRequest?.field_upload_id).toBe("string");
+  expect(exploreRequest?.driver_date_column).toBe("date");
+  expect(exploreRequest?.driver_value_column).toBe("driver_index");
+  expect(exploreRequest?.field_variable).toBe("sst_anom_custom");
+
+  await expect(page.locator("#map_status")).toContainText("Exploration ready", { timeout: 15_000 });
+  await expect(page.locator("#map_run")).toBeEnabled();
+
+  await page.locator("#map_run").click();
+  await expect.poll(() => mapSubmitRequest).not.toBeNull();
+  expect(mapSubmitRequest?.driver_source_type).toBe("upload");
+  expect(mapSubmitRequest?.field_source_type).toBe("upload");
+  await expect(page.locator("#map_status")).toContainText("SDC map ready", { timeout: 15_000 });
+  expect(statusPollCount).toBeGreaterThan(0);
+  await expect(page.locator("#sdc_map_summary")).toContainText("map_custom_driver.csv");
 });
