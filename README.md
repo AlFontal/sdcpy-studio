@@ -87,10 +87,6 @@ npm run test:e2e:with-api
 - The workflow runs:
   - `uv run pytest -q tests/test_api.py`
   - `npm run test:e2e:with-api`
-- Recommended repository setting:
-  - enable branch protection for `main`
-  - require status checks to pass before merging
-  - select required check: `CI / tests`
 
 ## License
 MIT
