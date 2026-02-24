@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from sdcpy_studio.main import create_app
@@ -18,6 +21,9 @@ class InlineJobManager:
     def __init__(self):
         self.jobs = {}
         self.datasets = {}
+        self.map_uploads = {}
+        self._tmpdir = TemporaryDirectory(prefix="sdcpy-studio-tests-")
+        self._tmpdir_path = Path(self._tmpdir.name)
 
     def submit(self, request: SDCJobRequest):
         job_id = uuid4().hex
@@ -102,7 +108,25 @@ class InlineJobManager:
     def get_dataset(self, dataset_id: str):
         return self.datasets.get(dataset_id)
 
+    def register_map_upload(self, *, kind: str, filename: str, content: bytes, metadata=None):
+        upload_id = uuid4().hex
+        suffix = Path(filename).suffix or (".csv" if kind == "driver" else ".nc")
+        path = self._tmpdir_path / f"{kind}_{upload_id}{suffix}"
+        path.write_bytes(content)
+        record = type("MapUpload", (), {})()
+        record.upload_id = upload_id
+        record.kind = kind
+        record.filename = filename
+        record.path = path
+        record.metadata = metadata or {}
+        self.map_uploads[upload_id] = record
+        return record
+
+    def get_map_upload(self, upload_id: str):
+        return self.map_uploads.get(upload_id)
+
     def shutdown(self):
+        self._tmpdir.cleanup()
         return None
 
 
@@ -111,6 +135,38 @@ def _series_payload(n: int = 80):
     ts1 = np.sin(x)
     ts2 = np.sin(x + 0.7)
     return ts1.tolist(), ts2.tolist()
+
+
+def _custom_map_driver_csv(n: int = 72) -> str:
+    rows = ["date,my_index,other"]
+    for i in range(n):
+        year = 2000 + (i // 12)
+        month = (i % 12) + 1
+        rows.append(
+            f"{year}-{month:02d}-01,{np.sin(i / 5):.6f},{np.cos(i / 7):.6f}"
+        )
+    return "\n".join(rows)
+
+
+def _custom_map_field_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    times = np.array(
+        [f"2000-{m:02d}-01" for m in range(1, 7)] + [f"2001-{m:02d}-01" for m in range(1, 7)],
+        dtype="datetime64[ns]",
+    )
+    lats = np.array([-10.0, 0.0, 10.0], dtype=float)
+    lons = np.array([120.0, 140.0, 160.0, 180.0], dtype=float)
+    tt, yy, xx = np.meshgrid(np.arange(times.size), lats, lons, indexing="ij")
+    values = np.sin(tt / 2.0) + 0.1 * yy + 0.01 * xx
+    ds = xr.Dataset(
+        data_vars={
+            "sst_anom": (("time", "lat", "lon"), values.astype("float32")),
+            "bad2d": (("lat", "lon"), values[0].astype("float32")),
+        },
+        coords={"time": times, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
 
 
 def test_root_page_renders():
@@ -423,6 +479,151 @@ def test_map_job_endpoints():
     assert nc.status_code == 200
     assert nc.headers["content-type"] == "application/x-netcdf"
     assert nc.content[:3] == b"CDF"
+
+
+def test_map_custom_upload_inspection_endpoints():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    driver_csv = _custom_map_driver_csv()
+    driver_resp = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={"driver_file": ("driver.csv", BytesIO(driver_csv.encode("utf-8")), "text/csv")},
+    )
+    assert driver_resp.status_code == 200
+    driver = driver_resp.json()
+    assert driver["filename"] == "driver.csv"
+    assert driver["upload_id"]
+    assert "date" in driver["datetime_columns"]
+    assert "my_index" in driver["numeric_columns"]
+    assert driver["suggested_date_column"] == "date"
+    assert driver["defaults"]["peak_date"]
+
+    field_resp = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "field.nc",
+                BytesIO(_custom_map_field_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert field_resp.status_code == 200
+    field = field_resp.json()
+    assert field["filename"] == "field.nc"
+    assert field["upload_id"]
+    assert "sst_anom" in field["variables"]
+    assert "sst_anom" in field["compatible_variables"]
+    assert field["suggested_variable"] == "sst_anom"
+    assert field["dims"]["time"] == 12
+    assert field["dims"]["lat"] == 3
+    assert field["dims"]["lon"] == 4
+
+
+def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    driver_resp = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={
+            "driver_file": (
+                "driver.csv",
+                BytesIO(_custom_map_driver_csv().encode("utf-8")),
+                "text/csv",
+            )
+        },
+    )
+    field_resp = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "field.nc",
+                BytesIO(_custom_map_field_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert driver_resp.status_code == 200
+    assert field_resp.status_code == 200
+    driver = driver_resp.json()
+    field = field_resp.json()
+
+    captured = {}
+
+    def fake_build(payload):
+        captured["explore"] = payload
+        return {
+            "summary": {
+                "driver_dataset": "driver.csv",
+                "field_dataset": "field.nc",
+                "time_start": "2000-01-01",
+                "time_end": "2001-12-01",
+                "peak_date": "2000-06-01",
+                "n_time": 12,
+                "n_lat": 3,
+                "n_lon": 4,
+                "valid_values": 144,
+                "valid_rate": 1.0,
+                "first_valid_index": [0, 0, 0],
+                "field_lat_min": -10.0,
+                "field_lat_max": 10.0,
+                "field_lon_min": 120.0,
+                "field_lon_max": 180.0,
+                "field_value_min": -1.0,
+                "field_value_max": 2.0,
+                "used_lat_min": -10.0,
+                "used_lat_max": 10.0,
+                "used_lon_min": 120.0,
+                "used_lon_max": 180.0,
+                "full_bounds_selected": True,
+                "driver_source_type": "upload",
+                "field_source_type": "upload",
+                "field_variable": "sst_anom",
+            },
+            "time_index": ["2000-01-01"],
+            "driver_values": [0.1],
+            "lat": [-10.0],
+            "lon": [120.0],
+            "field_frames": [[[0.2]]],
+            "coastline": {"lat": [None], "lon": [None]},
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_exploration", fake_build)
+
+    explore_payload = {
+        "driver_dataset": "custom_driver",
+        "field_dataset": "custom_field",
+        "driver_source_type": "upload",
+        "field_source_type": "upload",
+        "driver_upload_id": driver["upload_id"],
+        "driver_date_column": driver["suggested_date_column"],
+        "driver_value_column": driver["suggested_value_column"],
+        "field_upload_id": field["upload_id"],
+        "field_variable": field["suggested_variable"],
+        "fragment_size": 12,
+        "n_permutations": 9,
+        "alpha": 0.05,
+        "top_fraction": 0.25,
+        "min_lag": -4,
+        "max_lag": 4,
+    }
+
+    explore = client.post("/api/v1/sdc-map/explore", json=explore_payload)
+    assert explore.status_code == 200
+    assert captured["explore"]["driver_upload_path"]
+    assert captured["explore"]["field_upload_path"]
+    assert captured["explore"]["driver_upload_filename"] == "driver.csv"
+    assert captured["explore"]["field_upload_filename"] == "field.nc"
+    assert explore.json()["result"]["summary"]["driver_source_type"] == "upload"
+
+    submit = client.post("/api/v1/jobs/sdc-map", json=explore_payload)
+    assert submit.status_code == 200
+    job_id = submit.json()["job_id"]
+    result = client.get(f"/api/v1/jobs/sdc-map/{job_id}/result")
+    assert result.status_code == 200
+    assert result.json()["result"]["summary"]["fragment_size"] == 12
 
 
 def test_map_explore_endpoint(monkeypatch):

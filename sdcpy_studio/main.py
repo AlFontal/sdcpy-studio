@@ -22,6 +22,8 @@ from sdcpy_studio.schemas import (
     SDCJobFromDatasetRequest,
     SDCJobRequest,
     SDCMapExploreResponse,
+    SDCMapDriverUploadInspectResponse,
+    SDCMapFieldUploadInspectResponse,
     SDCMapJobRequest,
     SDCMapJobResultResponse,
 )
@@ -34,6 +36,8 @@ from sdcpy_studio.service import (
     get_sdc_map_catalog,
     get_sdc_map_driver_defaults,
     inspect_dataset_csv,
+    inspect_sdc_map_driver_csv,
+    inspect_sdc_map_field_netcdf,
     parse_series_csv,
 )
 
@@ -78,6 +82,25 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+    def _hydrate_map_upload_request(payload: SDCMapJobRequest) -> SDCMapJobRequest:
+        if payload.driver_source_type == "upload":
+            record = app.state.job_manager.get_map_upload(payload.driver_upload_id)
+            if record is None or record.kind != "driver" or not record.path.exists():
+                raise HTTPException(status_code=404, detail="Custom driver upload not found or expired.")
+            payload.driver_upload_path = str(record.path)
+            payload.driver_upload_filename = record.filename
+            if not str(payload.driver_dataset or "").strip():
+                payload.driver_dataset = "custom_driver"
+        if payload.field_source_type == "upload":
+            record = app.state.job_manager.get_map_upload(payload.field_upload_id)
+            if record is None or record.kind != "field" or not record.path.exists():
+                raise HTTPException(status_code=404, detail="Custom field upload not found or expired.")
+            payload.field_upload_path = str(record.path)
+            payload.field_upload_filename = record.filename
+            if not str(payload.field_dataset or "").strip():
+                payload.field_dataset = "custom_field"
+        return payload
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
@@ -202,6 +225,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
     @app.post("/api/v1/jobs/sdc-map", response_model=JobSubmissionResponse)
     async def submit_sdc_map_job(payload: SDCMapJobRequest) -> JobSubmissionResponse:
+        payload = _hydrate_map_upload_request(payload)
         job = app.state.job_manager.submit_map(payload)
         return JobSubmissionResponse(
             job_id=job.job_id,
@@ -211,11 +235,43 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
 
     @app.post("/api/v1/sdc-map/explore", response_model=SDCMapExploreResponse)
     async def explore_sdc_map(payload: SDCMapJobRequest) -> SDCMapExploreResponse:
+        payload = _hydrate_map_upload_request(payload)
         try:
             result = build_sdc_map_exploration(payload.model_dump(mode="python"))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return SDCMapExploreResponse(status="ready", result=result)
+
+    @app.post("/api/v1/sdc-map/driver/inspect", response_model=SDCMapDriverUploadInspectResponse)
+    async def inspect_sdc_map_driver(driver_file: Annotated[UploadFile, File(...)]) -> SDCMapDriverUploadInspectResponse:
+        filename = driver_file.filename or "driver.csv"
+        content = await driver_file.read()
+        try:
+            metadata = inspect_sdc_map_driver_csv(content, filename=filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        record = app.state.job_manager.register_map_upload(
+            kind="driver",
+            filename=filename,
+            content=content,
+            metadata=metadata,
+        )
+        return SDCMapDriverUploadInspectResponse(upload_id=record.upload_id, **metadata)
+
+    @app.post("/api/v1/sdc-map/field/inspect", response_model=SDCMapFieldUploadInspectResponse)
+    async def inspect_sdc_map_field(field_file: Annotated[UploadFile, File(...)]) -> SDCMapFieldUploadInspectResponse:
+        filename = field_file.filename or "field.nc"
+        content = await field_file.read()
+        record = app.state.job_manager.register_map_upload(
+            kind="field",
+            filename=filename,
+            content=content,
+        )
+        try:
+            metadata = inspect_sdc_map_field_netcdf(record.path, filename=filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return SDCMapFieldUploadInspectResponse(upload_id=record.upload_id, **metadata)
 
     @app.get("/api/v1/sdc-map/catalog")
     async def sdc_map_catalog() -> dict:

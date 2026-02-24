@@ -5,6 +5,8 @@ const statusProgressLabel = document.getElementById("status_progress_label");
 const statusProgressValue = document.getElementById("status_progress_value");
 const statusProgressTrack = document.getElementById("status_progress_track");
 const statusProgressFill = document.getElementById("status_progress_fill");
+const themeToggleButton = document.getElementById("theme_toggle");
+const themeToggleValue = document.getElementById("theme_toggle_value");
 
 const summaryStats = document.getElementById("summary_stats");
 const summaryNotes = document.getElementById("summary_notes");
@@ -58,8 +60,19 @@ const pasteValidationText = document.getElementById("paste_validation");
 const downloadXlsxButton = document.getElementById("download_xlsx");
 const downloadPngButton = document.getElementById("download_png");
 const downloadSvgButton = document.getElementById("download_svg");
+const mapDriverSourceInput = document.getElementById("map_driver_source");
 const mapDriverDatasetInput = document.getElementById("map_driver_dataset");
+const mapFieldSourceInput = document.getElementById("map_field_source");
 const mapFieldDatasetInput = document.getElementById("map_field_dataset");
+const mapDriverFileInput = document.getElementById("map_driver_file");
+const mapDriverDateSelect = document.getElementById("map_driver_date_col");
+const mapDriverValueSelect = document.getElementById("map_driver_value_col");
+const mapDriverUploadStatus = document.getElementById("map_driver_upload_status");
+const mapFieldFileInput = document.getElementById("map_field_file");
+const mapFieldVariableSelect = document.getElementById("map_field_variable");
+const mapFieldUploadStatus = document.getElementById("map_field_upload_status");
+const mapDriverUploadPanel = document.getElementById("map_driver_upload_panel");
+const mapFieldUploadPanel = document.getElementById("map_field_upload_panel");
 const mapFragmentSizeInput = document.getElementById("map_fragment_size");
 const mapAlphaInput = document.getElementById("map_alpha");
 const mapTopFractionInput = document.getElementById("map_top_fraction");
@@ -99,6 +112,8 @@ const mapDriverDatasetMeta = document.getElementById("map_driver_dataset_meta");
 const mapFieldDatasetMeta = document.getElementById("map_field_dataset_meta");
 const mapSaturationInput = document.getElementById("map_saturation");
 const mapSaturationMeta = document.getElementById("map_saturation_meta");
+
+const THEME_STORAGE_KEY = "sdcpy-theme";
 
 let activePoll = null;
 let latestResult = null;
@@ -142,6 +157,9 @@ let lagExplorerState = {
   maxLag: null,
   selectedLag: null,
 };
+let mapCustomDriverUpload = null;
+let mapCustomFieldUpload = null;
+let themeChartRefreshTimer = null;
 
 const MAP_DRIVER_LABEL_OVERRIDES = {
   pdo: "Pacific Decadal Oscillation (PDO)",
@@ -166,11 +184,331 @@ const RD_BU_WHITE_CENTER = [
   [0.875, "#b2182b"],
   [1.0, "#67001f"],
 ];
+const DARK_COLORMAP_NEUTRAL = "#405468";
+const DIVERGING_DARK_BLUE_ORANGE = [
+  [0.0, "#79c6ff"],
+  [0.125, "#57afea"],
+  [0.25, "#3e95cf"],
+  [0.375, "#2f78a8"],
+  [0.5, DARK_COLORMAP_NEUTRAL],
+  [0.625, "#b98145"],
+  [0.75, "#d79b56"],
+  [0.875, "#f0bc72"],
+  [1.0, "#ffe0a8"],
+];
 const TS1_PLOT_COLOR = "#f06f6c";
 const TS2_PLOT_COLOR = "#18b8bd";
 
 const ADAPTIVE_HEATMAP_BASE_LENGTH = 2000;
 const MIN_ANALYSIS_SERIES_LENGTH = 20;
+
+function getSystemThemePreference() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return "light";
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getStoredThemePreference() {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === "dark" || stored === "light" ? stored : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function applyTheme(theme, { persist = true, refreshCharts = false } = {}) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+
+  if (persist) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    } catch (_error) {
+      // Ignore storage access failures (private mode / policy).
+    }
+  }
+
+  if (themeToggleValue) {
+    themeToggleValue.textContent = nextTheme === "dark" ? "Dark" : "Light";
+  }
+  if (themeToggleButton) {
+    const isDark = nextTheme === "dark";
+    themeToggleButton.setAttribute("aria-pressed", String(isDark));
+    themeToggleButton.setAttribute(
+      "aria-label",
+      isDark ? "Switch to light theme" : "Switch to dark theme",
+    );
+  }
+  if (refreshCharts) {
+    scheduleThemeChartRefresh();
+  }
+}
+
+function initTheme() {
+  const storedTheme = getStoredThemePreference();
+  applyTheme(storedTheme || getSystemThemePreference(), { persist: false, refreshCharts: false });
+
+  if (themeToggleButton) {
+    themeToggleButton.addEventListener("click", () => {
+      const currentTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+      applyTheme(currentTheme === "dark" ? "light" : "dark", { refreshCharts: true });
+    });
+  }
+}
+
+function getCssVarValue(name, fallback = "") {
+  try {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function isDarkThemeActive() {
+  return document.documentElement.dataset.theme === "dark";
+}
+
+function cloneColorscale(colorscale) {
+  if (!Array.isArray(colorscale)) {
+    return colorscale;
+  }
+  return colorscale.map((stop) => (Array.isArray(stop) ? [stop[0], stop[1]] : stop));
+}
+
+function withDarkCenter(colorscale, centerColor = DARK_COLORMAP_NEUTRAL) {
+  if (!Array.isArray(colorscale)) {
+    return colorscale;
+  }
+  const cloned = cloneColorscale(colorscale);
+  let replaced = false;
+  for (let idx = 0; idx < cloned.length; idx += 1) {
+    const stop = cloned[idx];
+    if (!Array.isArray(stop) || stop.length < 2) {
+      continue;
+    }
+    if (Math.abs(Number(stop[0]) - 0.5) < 1e-9) {
+      cloned[idx] = [0.5, centerColor];
+      replaced = true;
+    }
+  }
+  if (!replaced) {
+    cloned.push([0.5, centerColor]);
+    cloned.sort((a, b) => Number(a?.[0] || 0) - Number(b?.[0] || 0));
+  }
+  return cloned;
+}
+
+function isZeroCenteredColorscale({ zmin = null, zmax = null, zmid = undefined } = {}) {
+  if (Number.isFinite(zmid) && Number(zmid) === 0) {
+    return true;
+  }
+  return Number.isFinite(zmin) && Number.isFinite(zmax) && Number(zmin) < 0 && Number(zmax) > 0;
+}
+
+function getThemeAwareColorscale(colorscale, rangeOptions = {}) {
+  const { darkCenterColor = null, ...domainOptions } = rangeOptions || {};
+  if (!isDarkThemeActive() || !isZeroCenteredColorscale(domainOptions)) {
+    return cloneColorscale(colorscale);
+  }
+  const centerColor = typeof darkCenterColor === "string" && darkCenterColor.trim()
+    ? darkCenterColor.trim()
+    : DARK_COLORMAP_NEUTRAL;
+  if (typeof colorscale === "string") {
+    const key = colorscale.trim().toLowerCase();
+    if (key === "rdylbu") {
+      return withDarkCenter(DIVERGING_DARK_BLUE_ORANGE, centerColor);
+    }
+    if (key === "brbg") {
+      return withDarkCenter(DIVERGING_DARK_BLUE_ORANGE, centerColor);
+    }
+    return colorscale;
+  }
+  return withDarkCenter(DIVERGING_DARK_BLUE_ORANGE, centerColor);
+}
+
+function getMapDarkNeutralColor() {
+  return getCssVarValue("--bg", DARK_COLORMAP_NEUTRAL) || DARK_COLORMAP_NEUTRAL;
+}
+
+function getMapCoastlineColor() {
+  return isDarkThemeActive() ? "#ffffff" : "#000000";
+}
+
+function colorWithAlpha(color, alpha, fallback = null) {
+  const normalized = String(color || "").trim();
+  const safeAlpha = Math.max(0, Math.min(1, Number(alpha)));
+  if (/^#([0-9a-f]{3})$/i.test(normalized)) {
+    const [, shortHex] = normalized.match(/^#([0-9a-f]{3})$/i) || [];
+    if (shortHex) {
+      const [r, g, b] = shortHex.split("").map((char) => parseInt(char + char, 16));
+      return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+    }
+  }
+  if (/^#([0-9a-f]{6})$/i.test(normalized)) {
+    const [, fullHex] = normalized.match(/^#([0-9a-f]{6})$/i) || [];
+    if (fullHex) {
+      const r = parseInt(fullHex.slice(0, 2), 16);
+      const g = parseInt(fullHex.slice(2, 4), 16);
+      const b = parseInt(fullHex.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${safeAlpha})`;
+    }
+  }
+  if (/^rgba?\(/i.test(normalized)) {
+    return normalized;
+  }
+  return fallback || normalized || `rgba(17, 24, 39, ${safeAlpha})`;
+}
+
+function getPlotlyThemeTokens() {
+  const ink = getCssVarValue("--ink", "#111827");
+  const muted = getCssVarValue("--muted", "#536071");
+  const line = getCssVarValue("--line", "#d1d5db");
+  const surface = getCssVarValue("--surface", "#ffffff");
+  const accent = getCssVarValue("--accent", "#0a7f5a");
+  const accent2 = getCssVarValue("--accent-2", "#0077b6");
+
+  return {
+    ink,
+    muted,
+    line,
+    surface,
+    accent,
+    accent2,
+    paperBg: "rgba(0,0,0,0)",
+    plotBg: "rgba(0,0,0,0)",
+    gridColor: colorWithAlpha(line, 0.95, "#d1d5db"),
+    panelOutlineColor: colorWithAlpha(ink, 0.9, "#111827"),
+    panelFrameLineColor: colorWithAlpha(ink, 0.95, "#111827"),
+    shadowLineColor: colorWithAlpha(ink, 0.24, "rgba(17, 24, 39, 0.24)"),
+    shadowFillColor: colorWithAlpha(ink, 0.14, "rgba(17, 24, 39, 0.14)"),
+    colorbarBg: colorWithAlpha(surface, 0.86, "rgba(255,255,255,0.86)"),
+    highlightLine: "#f97316",
+    highlightFill: "rgba(249, 115, 22, 0.15)",
+    boundsFill: "rgba(249,115,22,0.06)",
+  };
+}
+
+function applyPlotlyLayoutTheme(layout, theme, axisKeys = []) {
+  if (!layout) {
+    return layout;
+  }
+  layout.paper_bgcolor = theme.paperBg;
+  layout.plot_bgcolor = theme.plotBg;
+  layout.font = { ...(layout.font || {}), color: theme.ink };
+  if (layout.legend) {
+    layout.legend = {
+      ...layout.legend,
+      bgcolor: layout.legend.bgcolor || "rgba(0,0,0,0)",
+      font: { ...(layout.legend.font || {}), color: theme.ink },
+    };
+  }
+  layout.hoverlabel = {
+    ...(layout.hoverlabel || {}),
+    bgcolor: theme.surface,
+    bordercolor: theme.line,
+    font: { ...((layout.hoverlabel && layout.hoverlabel.font) || {}), color: theme.ink },
+  };
+
+  axisKeys.forEach((key) => {
+    const axis = layout[key];
+    if (!axis) {
+      return;
+    }
+    axis.color = axis.color || theme.ink;
+    axis.tickfont = { ...(axis.tickfont || {}), color: axis.tickfont?.color || theme.ink };
+    if (axis.showgrid) {
+      axis.gridcolor = theme.gridColor;
+    }
+    if (axis.showline) {
+      axis.linecolor = axis.linecolor || theme.panelOutlineColor;
+    }
+    if (axis.zeroline) {
+      axis.zerolinecolor = axis.zerolinecolor || theme.gridColor;
+    }
+    if (axis.title && typeof axis.title === "object") {
+      axis.title = {
+        ...axis.title,
+        font: { ...(axis.title.font || {}), color: axis.title.font?.color || theme.ink },
+      };
+    }
+    if (axis.titlefont || typeof axis.title === "string") {
+      axis.titlefont = { ...(axis.titlefont || {}), color: axis.titlefont?.color || theme.ink };
+    }
+  });
+
+  if (Array.isArray(layout.annotations)) {
+    layout.annotations = layout.annotations.map((annotation) => ({
+      ...annotation,
+      font: { ...(annotation.font || {}), color: annotation.font?.color || theme.ink },
+    }));
+  }
+  if (layout.newshape?.line) {
+    layout.newshape = {
+      ...layout.newshape,
+      line: { ...layout.newshape.line },
+      fillcolor: layout.newshape.fillcolor || theme.boundsFill,
+    };
+  }
+  return layout;
+}
+
+function applyPlotlyColorbarTheme(trace, theme) {
+  if (!trace?.colorbar) {
+    return;
+  }
+  trace.colorbar = {
+    ...trace.colorbar,
+    bgcolor: trace.colorbar.bgcolor || theme.colorbarBg,
+    bordercolor: trace.colorbar.bordercolor || theme.line,
+    tickfont: { ...(trace.colorbar.tickfont || {}), color: trace.colorbar.tickfont?.color || theme.ink },
+  };
+  if (trace.colorbar.title) {
+    if (typeof trace.colorbar.title === "string") {
+      trace.colorbar.title = { text: trace.colorbar.title, font: { color: theme.ink } };
+    } else {
+      trace.colorbar.title = {
+        ...trace.colorbar.title,
+        font: {
+          ...(trace.colorbar.title.font || {}),
+          color: trace.colorbar.title.font?.color || theme.ink,
+        },
+      };
+    }
+  }
+}
+
+async function refreshActivePlotlyChartsForTheme() {
+  if (!window.Plotly) {
+    return;
+  }
+  if (activeWorkflowTab === "map") {
+    if (mapPhase === "explore" && latestMapExplore) {
+      await renderMapExploration(latestMapExplore);
+      return;
+    }
+    if (mapPhase === "results" && latestMapResult?.layer_maps) {
+      await renderActiveMapResultLayer();
+      return;
+    }
+  }
+  if (latestResult) {
+    renderTwoWayExplorer(latestResult);
+  }
+}
+
+function scheduleThemeChartRefresh() {
+  if (themeChartRefreshTimer) {
+    clearTimeout(themeChartRefreshTimer);
+  }
+  themeChartRefreshTimer = setTimeout(() => {
+    themeChartRefreshTimer = null;
+    void refreshActivePlotlyChartsForTheme();
+  }, 40);
+}
 
 function getConfig() {
   return {
@@ -680,11 +1018,93 @@ function parseOptionalDateInput(inputEl) {
   return raw || null;
 }
 
+function isCustomMapDriverSelected() {
+  return (mapDriverSourceInput?.value || "catalog") === "upload";
+}
+
+function isCustomMapFieldSelected() {
+  return (mapFieldSourceInput?.value || "catalog") === "upload";
+}
+
+function setMapUploadStatus(target, message, isError = false) {
+  if (!target) {
+    return;
+  }
+  target.textContent = message;
+  target.classList.toggle("error", !!isError);
+}
+
+function setSelectOptions(selectEl, options, placeholder) {
+  if (!selectEl) {
+    return;
+  }
+  const selectedValue = selectEl.value;
+  selectEl.innerHTML = "";
+  const values = Array.isArray(options) ? options : [];
+  if (!values.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = placeholder || "No options available";
+    selectEl.appendChild(option);
+    selectEl.value = "";
+    return;
+  }
+  values.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = String(value);
+    selectEl.appendChild(option);
+  });
+  if (values.includes(selectedValue)) {
+    selectEl.value = selectedValue;
+  } else {
+    selectEl.value = String(values[0]);
+  }
+}
+
+function syncMapSourceControls() {
+  const customDriver = isCustomMapDriverSelected();
+  const customField = isCustomMapFieldSelected();
+  if (mapDriverDatasetInput) {
+    mapDriverDatasetInput.disabled = customDriver;
+  }
+  if (mapFieldDatasetInput) {
+    mapFieldDatasetInput.disabled = customField;
+  }
+  if (mapDriverUploadPanel) {
+    mapDriverUploadPanel.hidden = !customDriver;
+  }
+  if (mapFieldUploadPanel) {
+    mapFieldUploadPanel.hidden = !customField;
+  }
+}
+
 function getMapConfig() {
   const bounds = getMapBoundsSelection();
+  const customDriver = isCustomMapDriverSelected();
+  const customField = isCustomMapFieldSelected();
+  if (customDriver && !mapCustomDriverUpload?.upload_id) {
+    throw new Error("Upload and inspect a custom driver CSV before loading the map.");
+  }
+  if (customDriver && (!mapDriverDateSelect?.value || !mapDriverValueSelect?.value)) {
+    throw new Error("Select the driver CSV date column and series column.");
+  }
+  if (customField && !mapCustomFieldUpload?.upload_id) {
+    throw new Error("Upload and inspect a custom field NetCDF before loading the map.");
+  }
+  if (customField && !mapFieldVariableSelect?.value) {
+    throw new Error("Select the field NetCDF variable to use.");
+  }
   return {
-    driver_dataset: mapDriverDatasetInput?.value || "pdo",
-    field_dataset: mapFieldDatasetInput?.value || "ncep_air",
+    driver_dataset: customDriver ? "custom_driver" : mapDriverDatasetInput?.value || "pdo",
+    field_dataset: customField ? "custom_field" : mapFieldDatasetInput?.value || "ncep_air",
+    driver_source_type: customDriver ? "upload" : "catalog",
+    field_source_type: customField ? "upload" : "catalog",
+    driver_upload_id: customDriver ? mapCustomDriverUpload.upload_id : null,
+    driver_date_column: customDriver ? mapDriverDateSelect?.value || null : null,
+    driver_value_column: customDriver ? mapDriverValueSelect?.value || null : null,
+    field_upload_id: customField ? mapCustomFieldUpload.upload_id : null,
+    field_variable: customField ? mapFieldVariableSelect?.value || null : null,
     fragment_size: Math.max(2, Math.round(Number(mapFragmentSizeInput?.value) || 12)),
     alpha: Number(mapAlphaInput?.value || 0.05),
     top_fraction: Number(mapTopFractionInput?.value || 0.25),
@@ -918,27 +1338,84 @@ function renderMapSelectorOptions() {
 }
 
 function renderMapSelectorMetadata() {
-  if (!mapDatasetCatalog) {
+  const customDriver = isCustomMapDriverSelected();
+  const customField = isCustomMapFieldSelected();
+  if (customDriver && !mapCustomDriverUpload) {
     renderMetaCard(mapDriverDatasetMeta, {
-      title: "Driver metadata",
-      description: "Metadata unavailable right now.",
+      title: "Custom driver CSV",
+      description: "Upload a CSV, then choose the date and series columns.",
       chips: [],
     });
+  }
+  if (customField && !mapCustomFieldUpload) {
     renderMetaCard(mapFieldDatasetMeta, {
-      title: "Field metadata",
-      description: "Metadata unavailable right now.",
+      title: "Custom field NetCDF",
+      description: "Upload a NetCDF, then choose a compatible variable.",
       chips: [],
     });
+  }
+  if (customDriver && mapCustomDriverUpload) {
+    const defaults = mapCustomDriverUpload.defaults || {};
+    const coverage = formatMetadataDateRange(defaults.driver_min_date, defaults.driver_max_date);
+    const chips = [
+      coverage ? `Coverage: ${coverage}` : "",
+      Number.isFinite(Number(mapCustomDriverUpload.n_rows))
+        ? `${Number(mapCustomDriverUpload.n_rows).toLocaleString()} rows`
+        : "",
+      defaults.peak_date ? `Peak: ${defaults.peak_date}` : "",
+      mapDriverValueSelect?.value ? `Series: ${mapDriverValueSelect.value}` : "",
+    ];
+    renderMetaCard(mapDriverDatasetMeta, {
+      title: "Custom driver CSV",
+      description: mapCustomDriverUpload.filename || "Uploaded CSV",
+      chips,
+    });
+  }
+  if (customField && mapCustomFieldUpload) {
+    const coverage = formatMetadataDateRange(mapCustomFieldUpload.time_start, mapCustomFieldUpload.time_end);
+    const dims = mapCustomFieldUpload.dims || {};
+    const gridShape =
+      Number.isFinite(Number(dims.lat)) && Number.isFinite(Number(dims.lon))
+        ? `Grid: ${Number(dims.lat)}×${Number(dims.lon)}`
+        : "";
+    const chips = [
+      coverage ? `Coverage: ${coverage}` : "",
+      mapFieldVariableSelect?.value ? `Variable: ${mapFieldVariableSelect.value}` : "",
+      gridShape,
+      formatBoundsSnippet(mapCustomFieldUpload).replace(/^Domain:\s*/i, ""),
+    ];
+    renderMetaCard(mapFieldDatasetMeta, {
+      title: "Custom field NetCDF",
+      description: mapCustomFieldUpload.filename || "Uploaded NetCDF",
+      chips,
+    });
+  }
+
+  if (!mapDatasetCatalog) {
+    if (!customDriver) {
+      renderMetaCard(mapDriverDatasetMeta, {
+        title: "Driver metadata",
+        description: "Metadata unavailable right now.",
+        chips: [],
+      });
+    }
+    if (!customField) {
+      renderMetaCard(mapFieldDatasetMeta, {
+        title: "Field metadata",
+        description: "Metadata unavailable right now.",
+        chips: [],
+      });
+    }
     return;
   }
   const { driver, field } = getSelectedMapDatasets();
-  if (!driver) {
+  if (!customDriver && !driver) {
     renderMetaCard(mapDriverDatasetMeta, {
       title: "Driver metadata",
       description: "Select a driver dataset.",
       chips: [],
     });
-  } else {
+  } else if (!customDriver) {
     const coverage = formatMetadataDateRange(driver.time_start, driver.time_end);
     const loadedWindow = formatLoadedWindow(
       driver.loaded_time_start ?? latestMapExplore?.summary?.time_start,
@@ -956,13 +1433,13 @@ function renderMapSelectorMetadata() {
     });
   }
 
-  if (!field) {
+  if (!customField && !field) {
     renderMetaCard(mapFieldDatasetMeta, {
       title: "Field metadata",
       description: "Select a field dataset.",
       chips: [],
     });
-  } else {
+  } else if (!customField) {
     const coverage = formatMetadataDateRange(field.time_start, field.time_end);
     const loadedWindow = formatLoadedWindow(
       field.loaded_time_start ?? latestMapExplore?.summary?.time_start,
@@ -990,6 +1467,37 @@ function renderMapSelectorMetadata() {
 
 function renderMapDatasetDocs() {
   if (!mapDatasetDocsContent) {
+    return;
+  }
+  const customDriver = isCustomMapDriverSelected();
+  const customField = isCustomMapFieldSelected();
+  if (customDriver || customField) {
+    const driverDefaults = mapCustomDriverUpload?.defaults || {};
+    const driverCoverage = customDriver
+      ? formatMetadataDateRange(driverDefaults.driver_min_date, driverDefaults.driver_max_date) || "unknown"
+      : formatMetadataDateRange(
+          getSelectedMapDatasets().driver?.time_start,
+          getSelectedMapDatasets().driver?.time_end
+        ) || "available after load";
+    const fieldCoverage = customField
+      ? formatMetadataDateRange(mapCustomFieldUpload?.time_start, mapCustomFieldUpload?.time_end) || "unknown"
+      : formatMetadataDateRange(
+          getSelectedMapDatasets().field?.time_start,
+          getSelectedMapDatasets().field?.time_end
+        ) || "available after load";
+    const fieldVariable = customField ? mapFieldVariableSelect?.value || mapCustomFieldUpload?.suggested_variable : null;
+    mapDatasetDocsContent.innerHTML =
+      `<p><strong>${escapeHtml(
+        customDriver
+          ? `Custom driver (${mapCustomDriverUpload?.filename || "uploaded CSV"})`
+          : `Driver (${mapDriverDatasetInput?.value || ""})`
+      )}</strong><br><span class="hint">Coverage: ${escapeHtml(driverCoverage)}</span></p>` +
+      `<p><strong>${escapeHtml(
+        customField
+          ? `Custom field (${mapCustomFieldUpload?.filename || "uploaded NetCDF"})`
+          : `Field (${mapFieldDatasetInput?.value || ""})`
+      )}</strong>${fieldVariable ? ` (variable: ${escapeHtml(fieldVariable)})` : ""}<br>` +
+      `<span class="hint">Coverage: ${escapeHtml(fieldCoverage)}</span></p>`;
     return;
   }
   if (!mapDatasetCatalog) {
@@ -1072,6 +1580,101 @@ async function applyMapDriverDefaults(driverKey) {
       renderMapDatasetDocs();
     }
   }
+}
+
+function applyUploadedMapDriverDefaults() {
+  const defaults = mapCustomDriverUpload?.defaults || null;
+  if (!defaults) {
+    return;
+  }
+  if (mapPeakDateInput) {
+    mapPeakDateInput.value = defaults.peak_date || "";
+  }
+  if (mapTimeStartInput) {
+    mapTimeStartInput.value = defaults.time_start || "";
+  }
+  if (mapTimeEndInput) {
+    mapTimeEndInput.value = defaults.time_end || "";
+  }
+}
+
+async function inspectMapDriverUploadFile(file) {
+  if (!file) {
+    mapCustomDriverUpload = null;
+    setSelectOptions(mapDriverDateSelect, [], "Upload CSV first");
+    setSelectOptions(mapDriverValueSelect, [], "Upload CSV first");
+    setMapUploadStatus(
+      mapDriverUploadStatus,
+      "Upload a CSV with a date column and one numeric time-series column."
+    );
+    renderMapSelectorMetadata();
+    renderMapDatasetDocs();
+    return;
+  }
+  const formData = new FormData();
+  formData.append("driver_file", file);
+  setMapUploadStatus(mapDriverUploadStatus, `Inspecting ${file.name}...`);
+  const response = await fetch("/api/v1/sdc-map/driver/inspect", { method: "POST", body: formData });
+  const data = await response.json();
+  if (!response.ok) {
+    mapCustomDriverUpload = null;
+    setMapUploadStatus(mapDriverUploadStatus, data.detail || "Driver CSV inspection failed.", true);
+    throw new Error(data.detail || "Driver CSV inspection failed.");
+  }
+  mapCustomDriverUpload = data;
+  setSelectOptions(mapDriverDateSelect, data.datetime_columns || [], "No datetime columns found");
+  if (mapDriverDateSelect && data.suggested_date_column) {
+    mapDriverDateSelect.value = String(data.suggested_date_column);
+  }
+  setSelectOptions(mapDriverValueSelect, data.numeric_columns || [], "No numeric columns found");
+  if (mapDriverValueSelect && data.suggested_value_column) {
+    mapDriverValueSelect.value = String(data.suggested_value_column);
+  }
+  applyUploadedMapDriverDefaults();
+  setMapUploadStatus(
+    mapDriverUploadStatus,
+    `Ready: ${data.filename} (${Number(data.n_rows || 0).toLocaleString()} rows).`
+  );
+  renderMapSelectorMetadata();
+  renderMapDatasetDocs();
+}
+
+async function inspectMapFieldUploadFile(file) {
+  if (!file) {
+    mapCustomFieldUpload = null;
+    setSelectOptions(mapFieldVariableSelect, [], "Upload NetCDF first");
+    setMapUploadStatus(
+      mapFieldUploadStatus,
+      "Upload a NetCDF with a 3D variable using time/lat/lon dimensions."
+    );
+    renderMapSelectorMetadata();
+    renderMapDatasetDocs();
+    return;
+  }
+  const formData = new FormData();
+  formData.append("field_file", file);
+  setMapUploadStatus(mapFieldUploadStatus, `Inspecting ${file.name}...`);
+  const response = await fetch("/api/v1/sdc-map/field/inspect", { method: "POST", body: formData });
+  const data = await response.json();
+  if (!response.ok) {
+    mapCustomFieldUpload = null;
+    setMapUploadStatus(mapFieldUploadStatus, data.detail || "Field NetCDF inspection failed.", true);
+    throw new Error(data.detail || "Field NetCDF inspection failed.");
+  }
+  mapCustomFieldUpload = data;
+  const compatibleVars = data.compatible_variables || [];
+  setSelectOptions(mapFieldVariableSelect, compatibleVars, "No compatible variables found");
+  if (mapFieldVariableSelect && data.suggested_variable) {
+    mapFieldVariableSelect.value = String(data.suggested_variable);
+  }
+  setMapUploadStatus(
+    mapFieldUploadStatus,
+    `Ready: ${data.filename} (${compatibleVars.length} compatible variable${
+      compatibleVars.length === 1 ? "" : "s"
+    }).`
+  );
+  renderMapSelectorMetadata();
+  renderMapDatasetDocs();
 }
 
 function updateProgress(progress, status) {
@@ -1678,6 +2281,7 @@ function setInputMode(mode) {
 function renderTwoWayMatrixExplorer(result) {
   const containerId = "two_way_explorer";
   const container = document.getElementById(containerId);
+  const plotTheme = getPlotlyThemeTokens();
   if (!window.Plotly) {
     if (container) {
       container.textContent = "Plotly library unavailable in this environment.";
@@ -1697,8 +2301,9 @@ function renderTwoWayMatrixExplorer(result) {
       [],
       {
         title: "2-way explorer unavailable",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -1713,8 +2318,9 @@ function renderTwoWayMatrixExplorer(result) {
       [],
       {
         title: "2-way explorer unavailable",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -1911,7 +2517,7 @@ function renderTwoWayMatrixExplorer(result) {
       )
   );
   const colorbarX = tinyLayout ? 0.93 : compactLayout ? 0.942 : 0.95;
-  const panelOutlineColor = "#000000";
+  const panelOutlineColor = plotTheme.panelOutlineColor;
   const panelOutlineWidth = 1.4;
   const heatmapDomainWidth = domains.centerX[1] - domains.centerX[0];
   const heatmapDomainHeight = domains.mainY[1] - domains.mainY[0];
@@ -1934,7 +2540,7 @@ function renderTwoWayMatrixExplorer(result) {
       x1: domains.centerX[1],
       y0: domains.topY[0],
       y1: domains.topY[1],
-      line: { color: panelOutlineColor, width: panelOutlineWidth },
+      line: { color: plotTheme.panelFrameLineColor, width: panelOutlineWidth },
       fillcolor: "rgba(0,0,0,0)",
     },
     {
@@ -1945,7 +2551,7 @@ function renderTwoWayMatrixExplorer(result) {
       x1: domains.leftX[1],
       y0: domains.mainY[0],
       y1: domains.mainY[1],
-      line: { color: panelOutlineColor, width: panelOutlineWidth },
+      line: { color: plotTheme.panelFrameLineColor, width: panelOutlineWidth },
       fillcolor: "rgba(0,0,0,0)",
     },
     {
@@ -1956,7 +2562,7 @@ function renderTwoWayMatrixExplorer(result) {
       x1: domains.rightX[1],
       y0: domains.mainY[0],
       y1: domains.mainY[1],
-      line: { color: panelOutlineColor, width: panelOutlineWidth },
+      line: { color: plotTheme.panelFrameLineColor, width: panelOutlineWidth },
       fillcolor: "rgba(0,0,0,0)",
     },
     {
@@ -1967,7 +2573,7 @@ function renderTwoWayMatrixExplorer(result) {
       x1: domains.centerX[1],
       y0: domains.bottomY[0],
       y1: domains.bottomY[1],
-      line: { color: panelOutlineColor, width: panelOutlineWidth },
+      line: { color: plotTheme.panelFrameLineColor, width: panelOutlineWidth },
       fillcolor: "rgba(0,0,0,0)",
     },
   ];
@@ -1981,7 +2587,7 @@ function renderTwoWayMatrixExplorer(result) {
       y0: indicatorCornerY,
       x1: indicatorCornerX + indicatorWidth,
       y1: indicatorCornerY,
-      line: { color: "#111827", width: 4 },
+      line: { color: plotTheme.ink, width: 4 },
     },
     {
       type: "line",
@@ -1991,7 +2597,7 @@ function renderTwoWayMatrixExplorer(result) {
       y0: indicatorCornerY,
       x1: indicatorCornerX,
       y1: indicatorCornerY - indicatorHeight,
-      line: { color: "#111827", width: 4 },
+      line: { color: plotTheme.ink, width: 4 },
     },
   ];
 
@@ -2001,7 +2607,7 @@ function renderTwoWayMatrixExplorer(result) {
       mode: "lines",
       x: seriesPositions,
       y: ts1Series,
-      line: { color: "#111827", width: 2.2, simplify: false },
+      line: { color: plotTheme.ink, width: 2.2, simplify: false },
       xaxis: "x2",
       yaxis: "y2",
       customdata: labelSeries,
@@ -2013,7 +2619,7 @@ function renderTwoWayMatrixExplorer(result) {
       mode: "lines",
       x: ts2Series,
       y: seriesPositions,
-      line: { color: "#111827", width: 2.2, simplify: false },
+      line: { color: plotTheme.ink, width: 2.2, simplify: false },
       xaxis: "x3",
       yaxis: "y3",
       customdata: labelSeries,
@@ -2026,7 +2632,7 @@ function renderTwoWayMatrixExplorer(result) {
       y: heatY,
       z: zSig,
       customdata: heatmapHoverData,
-      colorscale: RD_BU_WHITE_CENTER,
+      colorscale: getThemeAwareColorscale(RD_BU_WHITE_CENTER, { zmin: -zAbsMax, zmax: zAbsMax, zmid: 0 }),
       zmin: -zAbsMax,
       zmax: zAbsMax,
       zmid: 0,
@@ -2094,7 +2700,7 @@ function renderTwoWayMatrixExplorer(result) {
       mode: "lines",
       x: [],
       y: [],
-      line: { color: "rgba(17, 24, 39, 0.24)", width: 10.5, simplify: false },
+      line: { color: plotTheme.shadowLineColor, width: 10.5, simplify: false },
       xaxis: "x2",
       yaxis: "y2",
       hoverinfo: "skip",
@@ -2106,7 +2712,7 @@ function renderTwoWayMatrixExplorer(result) {
       mode: "lines",
       x: [],
       y: [],
-      line: { color: "rgba(17, 24, 39, 0.24)", width: 10.5, simplify: false },
+      line: { color: plotTheme.shadowLineColor, width: 10.5, simplify: false },
       xaxis: "x3",
       yaxis: "y3",
       hoverinfo: "skip",
@@ -2116,8 +2722,8 @@ function renderTwoWayMatrixExplorer(result) {
   ];
 
   const layout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+    paper_bgcolor: plotTheme.paperBg,
+    plot_bgcolor: plotTheme.plotBg,
     margin: layoutMargins,
     showlegend: false,
     xaxis: {
@@ -2128,7 +2734,7 @@ function renderTwoWayMatrixExplorer(result) {
       ticks: "",
       automargin: true,
       showgrid: false,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       constrain: "domain",
       mirror: false,
@@ -2144,7 +2750,7 @@ function renderTwoWayMatrixExplorer(result) {
       ticks: "",
       automargin: true,
       showgrid: false,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       constrain: "domain",
       mirror: false,
@@ -2164,7 +2770,7 @@ function renderTwoWayMatrixExplorer(result) {
       title: "",
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       ticks: "outside",
       ticklen: 3,
@@ -2181,7 +2787,7 @@ function renderTwoWayMatrixExplorer(result) {
       title: "",
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       ticks: "outside",
       ticklen: 3,
@@ -2201,7 +2807,7 @@ function renderTwoWayMatrixExplorer(result) {
       tickfont: { size: tinyLayout ? 10 : 11 },
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       nticks: 4,
       mirror: true,
@@ -2221,7 +2827,7 @@ function renderTwoWayMatrixExplorer(result) {
       tickfont: { size: tinyLayout ? 10 : 11 },
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       ticks: "outside",
       ticklen: 3,
@@ -2243,7 +2849,7 @@ function renderTwoWayMatrixExplorer(result) {
       tickfont: { size: tinyLayout ? 10 : 11 },
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
@@ -2258,7 +2864,7 @@ function renderTwoWayMatrixExplorer(result) {
       title: "Max |corr|",
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       tickfont: { size: tinyLayout ? 10 : 11 },
       nticks: 4,
@@ -2275,7 +2881,7 @@ function renderTwoWayMatrixExplorer(result) {
       title: "Max |corr|",
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       tickfont: { size: tinyLayout ? 10 : 11 },
       nticks: 4,
@@ -2293,7 +2899,7 @@ function renderTwoWayMatrixExplorer(result) {
       title: "",
       automargin: true,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
@@ -2311,7 +2917,7 @@ function renderTwoWayMatrixExplorer(result) {
         font: {
           family: "Space Grotesk, sans-serif",
           size: tinyLayout ? 11 : 13,
-          color: "#111827",
+          color: plotTheme.ink,
         },
         xanchor: "center",
         yanchor: "bottom",
@@ -2327,7 +2933,7 @@ function renderTwoWayMatrixExplorer(result) {
         font: {
           family: "JetBrains Mono, monospace",
           size: tinyLayout ? 11 : 12,
-          color: "#111827",
+          color: plotTheme.ink,
         },
         xanchor: "left",
         yanchor: "middle",
@@ -2337,6 +2943,19 @@ function renderTwoWayMatrixExplorer(result) {
     shapes: [...panelFrameShapes, ...bracketShapes],
     height: plotHeight,
   };
+  applyPlotlyColorbarTheme(traces[2], plotTheme);
+  applyPlotlyLayoutTheme(layout, plotTheme, [
+    "xaxis",
+    "yaxis",
+    "xaxis2",
+    "yaxis2",
+    "xaxis3",
+    "yaxis3",
+    "xaxis4",
+    "yaxis4",
+    "xaxis5",
+    "yaxis5",
+  ]);
 
   const config = { responsive: true, displaylogo: false };
 
@@ -2394,7 +3013,7 @@ function renderTwoWayMatrixExplorer(result) {
         y0: ts1Min - ts1Pad,
         y1: ts1Max + ts1Pad,
         line: { width: 0 },
-        fillcolor: "rgba(17, 24, 39, 0.14)",
+        fillcolor: plotTheme.shadowFillColor,
       };
       const ts2ShadowRect = {
         type: "rect",
@@ -2405,7 +3024,7 @@ function renderTwoWayMatrixExplorer(result) {
         y0: start2Idx - 0.5,
         y1: stop2 + 0.5,
         line: { width: 0 },
-        fillcolor: "rgba(17, 24, 39, 0.14)",
+        fillcolor: plotTheme.shadowFillColor,
       };
       const markerRect = {
         type: "rect",
@@ -2415,8 +3034,8 @@ function renderTwoWayMatrixExplorer(result) {
         x1: center1 + 0.5,
         y0: center2 - 0.5,
         y1: center2 + 0.5,
-        line: { color: "#f97316", width: 1.5 },
-        fillcolor: "rgba(249, 115, 22, 0.15)",
+        line: { color: plotTheme.highlightLine, width: 1.5 },
+        fillcolor: plotTheme.highlightFill,
       };
       Plotly.relayout(gd, {
         shapes: [...panelFrameShapes, ...bracketShapes, ts1ShadowRect, ts2ShadowRect, markerRect],
@@ -2430,6 +3049,7 @@ function renderTwoWayMatrixExplorer(result) {
 function renderLagFocusExplorer(result) {
   const containerId = "two_way_lag_explorer";
   const container = twoWayLagExplorerContainer || document.getElementById(containerId);
+  const plotTheme = getPlotlyThemeTokens();
   if (!window.Plotly) {
     if (container) {
       container.textContent = "Plotly library unavailable in this environment.";
@@ -2449,8 +3069,9 @@ function renderLagFocusExplorer(result) {
       [],
       {
         title: "Lag focus view unavailable",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -2470,8 +3091,9 @@ function renderLagFocusExplorer(result) {
       [],
       {
         title: "Lag focus view unavailable",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -2492,8 +3114,9 @@ function renderLagFocusExplorer(result) {
       [],
       {
         title: "Lag focus view unavailable",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -2514,8 +3137,9 @@ function renderLagFocusExplorer(result) {
       [],
       {
         title: "Lag focus view unavailable for selected lag range",
-        paper_bgcolor: "rgba(0,0,0,0)",
-        plot_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: plotTheme.paperBg,
+        plot_bgcolor: plotTheme.plotBg,
+        font: { color: plotTheme.ink },
       },
       { responsive: true, displaylogo: false }
     );
@@ -2626,7 +3250,7 @@ function renderLagFocusExplorer(result) {
       z: zMasked,
       xaxis: "x2",
       yaxis: "y3",
-      colorscale: RD_BU_WHITE_CENTER,
+      colorscale: getThemeAwareColorscale(RD_BU_WHITE_CENTER, { zmin: -zAbsMax, zmax: zAbsMax, zmid: 0 }),
       zmin: -zAbsMax,
       zmax: zAbsMax,
       zmid: 0,
@@ -2650,7 +3274,7 @@ function renderLagFocusExplorer(result) {
       xaxis: "x3",
       yaxis: "y4",
       connectgaps: false,
-      line: { color: "#111827", width: 2.1, simplify: false },
+      line: { color: plotTheme.ink, width: 2.1, simplify: false },
       customdata: heatX.map((value) => {
         const idx = normalizePosition(Math.round(value), seriesLength - 1);
         return labelSeries[idx] || String(idx);
@@ -2671,7 +3295,7 @@ function renderLagFocusExplorer(result) {
       x1: axisMax,
       y0: 0,
       y1: 0,
-      line: { color: "#111827", width: 1.2, dash: "dash" },
+      line: { color: plotTheme.ink, width: 1.2, dash: "dash" },
     });
   }
   shapes.push({
@@ -2682,7 +3306,7 @@ function renderLagFocusExplorer(result) {
     x1: axisMax,
     y0: clampedSelectedLag,
     y1: clampedSelectedLag,
-    line: { color: "#f97316", width: 1.4, dash: "dot" },
+    line: { color: plotTheme.highlightLine, width: 1.4, dash: "dot" },
   });
   shapes.push({
     type: "line",
@@ -2692,13 +3316,13 @@ function renderLagFocusExplorer(result) {
     x1: axisMax,
     y0: 0,
     y1: 0,
-    line: { color: "#111827", width: 1.2, dash: "dash" },
+    line: { color: plotTheme.ink, width: 1.2, dash: "dash" },
   });
   const baseShapes = [...shapes];
 
   const layout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+    paper_bgcolor: plotTheme.paperBg,
+    plot_bgcolor: plotTheme.plotBg,
     margin: {
       t: tinyLayout ? 30 : 34,
       r: tinyLayout ? 44 : 52,
@@ -2710,7 +3334,7 @@ function renderLagFocusExplorer(result) {
       orientation: "h",
       x: 0,
       y: 1.02,
-      bgcolor: "rgba(255,255,255,0.65)",
+      bgcolor: plotTheme.colorbarBg,
     },
     height: Math.round(
       Math.max(
@@ -2724,11 +3348,11 @@ function renderLagFocusExplorer(result) {
       range: [axisMin, axisMax],
       showticklabels: false,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     yaxis: {
@@ -2737,11 +3361,11 @@ function renderLagFocusExplorer(result) {
       title: ts1Label,
       range: [ts1Min - ts1Pad, ts1Max + ts1Pad],
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     yaxis2: {
@@ -2753,7 +3377,7 @@ function renderLagFocusExplorer(result) {
       showgrid: false,
       zeroline: false,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     xaxis2: {
@@ -2763,11 +3387,11 @@ function renderLagFocusExplorer(result) {
       matches: "x",
       showticklabels: false,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     yaxis3: {
@@ -2775,11 +3399,11 @@ function renderLagFocusExplorer(result) {
       anchor: "x2",
       title: "Lag",
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     xaxis3: {
@@ -2793,11 +3417,11 @@ function renderLagFocusExplorer(result) {
       tickangle: 0,
       title: "Series 1 time",
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     yaxis4: {
@@ -2806,11 +3430,11 @@ function renderLagFocusExplorer(result) {
       title: corrLabel,
       range: [-1, 1],
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       zeroline: false,
       mirror: true,
       showline: true,
-      linecolor: "#000",
+      linecolor: plotTheme.panelOutlineColor,
       linewidth: 1.1,
     },
     annotations: [
@@ -2826,7 +3450,7 @@ function renderLagFocusExplorer(result) {
         font: {
           family: "JetBrains Mono, monospace",
           size: tinyLayout ? 10 : 11,
-          color: "#334155",
+          color: plotTheme.muted,
         },
       },
       {
@@ -2841,12 +3465,22 @@ function renderLagFocusExplorer(result) {
         font: {
           family: "JetBrains Mono, monospace",
           size: tinyLayout ? 10 : 11,
-          color: "#334155",
+          color: plotTheme.muted,
         },
       },
     ],
     shapes: baseShapes,
   };
+  applyPlotlyColorbarTheme(traces[2], plotTheme);
+  applyPlotlyLayoutTheme(layout, plotTheme, [
+    "xaxis",
+    "yaxis",
+    "yaxis2",
+    "xaxis2",
+    "yaxis3",
+    "xaxis3",
+    "yaxis4",
+  ]);
 
   Plotly.newPlot(containerId, traces, layout, { responsive: true, displaylogo: false }).then((gd) => {
     if (typeof gd.removeAllListeners === "function") {
@@ -2909,8 +3543,8 @@ function renderLagFocusExplorer(result) {
         x1: center1 + 0.5,
         y0: lagValue - 0.5,
         y1: lagValue + 0.5,
-        line: { color: "#f97316", width: 1.4 },
-        fillcolor: "rgba(249, 115, 22, 0.12)",
+        line: { color: plotTheme.highlightLine, width: 1.4 },
+        fillcolor: plotTheme.highlightFill,
       };
 
       Plotly.relayout(gd, {
@@ -3432,7 +4066,12 @@ function pickExploreColorSettings(minValue, maxValue, saturationAbs = null) {
   if (useDiverging) {
     const absBound = hasSat ? sat : Math.max(Math.abs(min), Math.abs(max), 1e-6);
     return {
-      colorscale: RD_BU_WHITE_CENTER,
+      colorscale: getThemeAwareColorscale(RD_BU_WHITE_CENTER, {
+        zmin: -absBound,
+        zmax: absBound,
+        zmid: 0,
+        darkCenterColor: getMapDarkNeutralColor(),
+      }),
       zmin: -absBound,
       zmax: absBound,
       zmid: 0,
@@ -3458,6 +4097,7 @@ async function renderMapExploration(explore) {
   if (!window.Plotly || !mapPlot) {
     return;
   }
+  const plotTheme = getPlotlyThemeTokens();
   const timeIndex = explore.time_index || [];
   const driverValues = (explore.driver_values || []).map((value) =>
     typeof value === "number" && Number.isFinite(value) ? value : null
@@ -3569,7 +4209,7 @@ async function renderMapExploration(explore) {
       y: coastlineLat,
       xaxis: "x",
       yaxis: "y",
-      line: { color: "#111827", width: 1.1, simplify: false },
+      line: { color: getMapCoastlineColor(), width: 1.1, simplify: false },
       hoverinfo: "skip",
       showlegend: false,
       name: "Coastline",
@@ -3581,7 +4221,7 @@ async function renderMapExploration(explore) {
       y: driverValues,
       xaxis: "x2",
       yaxis: "y2",
-      line: { color: "#111827", width: 2.1, simplify: false },
+      line: { color: plotTheme.ink, width: 2.1, simplify: false },
       name: driverLabel,
       hovertemplate: `Date=%{x}<br>${driverLabel}=%{y:.3f}<extra></extra>`,
     },
@@ -3599,8 +4239,8 @@ async function renderMapExploration(explore) {
   ];
 
   const layout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+    paper_bgcolor: plotTheme.paperBg,
+    plot_bgcolor: plotTheme.plotBg,
     margin: { t: 30, r: 42, b: 36, l: 54 },
     showlegend: true,
     legend: { orientation: "h", x: 0, y: -0.03 },
@@ -3628,7 +4268,7 @@ async function renderMapExploration(explore) {
       anchor: "y2",
       title: "Date",
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       tickfont: { size: 10 },
     },
     yaxis2: {
@@ -3636,7 +4276,7 @@ async function renderMapExploration(explore) {
       anchor: "x2",
       title: driverLabel,
       showgrid: true,
-      gridcolor: "#d1d5db",
+      gridcolor: plotTheme.gridColor,
       tickfont: { size: 10 },
     },
     yaxis3: {
@@ -3656,7 +4296,7 @@ async function renderMapExploration(explore) {
         y: Math.min(1.04, mapDomainY[1] + 0.03),
         showarrow: false,
         text: `Field map @ ${currentDate}`,
-        font: { size: 12, color: "#111827" },
+        font: { size: 12, color: plotTheme.ink },
       },
       {
         xref: "paper",
@@ -3665,17 +4305,19 @@ async function renderMapExploration(explore) {
         y: Math.min(1.04, seriesDomainY[1] + 0.03),
         showarrow: false,
         text: "Selected grid cell vs driver (dual axis)",
-        font: { size: 12, color: "#111827" },
+        font: { size: 12, color: plotTheme.ink },
       },
     ],
     dragmode: "drawrect",
     newshape: {
-      line: { color: "#f97316", width: 2, dash: "dash" },
-      fillcolor: "rgba(249,115,22,0.06)",
+      line: { color: plotTheme.highlightLine, width: 2, dash: "dash" },
+      fillcolor: plotTheme.boundsFill,
       layer: "above",
     },
     shapes: selectedBounds ? [createMapBoundsShape(selectedBounds)] : [],
   };
+  applyPlotlyColorbarTheme(traces[0], plotTheme);
+  applyPlotlyLayoutTheme(layout, plotTheme, ["xaxis", "yaxis", "xaxis2", "yaxis2", "yaxis3"]);
 
   await Plotly.newPlot(mapPlot, traces, layout, {
     responsive: true,
@@ -3824,6 +4466,7 @@ async function renderActiveMapResultLayer() {
   if (!latestMapResult?.layer_maps || !window.Plotly || !mapPlot) {
     return;
   }
+  const plotTheme = getPlotlyThemeTokens();
   const layerMaps = latestMapResult.layer_maps;
   const layers = getVisibleMapResultLayers(layerMaps);
   if (!layers.length) {
@@ -3867,7 +4510,12 @@ async function renderActiveMapResultLayer() {
       z: layer.values,
       xaxis: "x",
       yaxis: "y",
-      colorscale: layer.colorscale,
+      colorscale: getThemeAwareColorscale(layer.colorscale, {
+        zmin: layer.zmin,
+        zmax: layer.zmax,
+        zmid: layer.zmin === null || layer.zmax === null ? undefined : 0,
+        darkCenterColor: getMapDarkNeutralColor(),
+      }),
       zmin: layer.zmin,
       zmax: layer.zmax,
       zmid: layer.zmin === null || layer.zmax === null ? undefined : 0,
@@ -3893,15 +4541,15 @@ async function renderActiveMapResultLayer() {
       y: layerMaps.coastline?.lat || [],
       xaxis: "x",
       yaxis: "y",
-      line: { color: "#111827", width: 1.1, simplify: false },
+      line: { color: getMapCoastlineColor(), width: 1.1, simplify: false },
       hoverinfo: "skip",
       showlegend: false,
       name: "Coastline",
     },
   ];
   const layout = {
-    paper_bgcolor: "rgba(0,0,0,0)",
-    plot_bgcolor: "rgba(0,0,0,0)",
+    paper_bgcolor: plotTheme.paperBg,
+    plot_bgcolor: plotTheme.plotBg,
     margin: layoutMetrics.margins,
     height: layoutMetrics.height,
     showlegend: false,
@@ -3924,6 +4572,8 @@ async function renderActiveMapResultLayer() {
       constrain: "domain",
     },
   };
+  applyPlotlyColorbarTheme(traces[0], plotTheme);
+  applyPlotlyLayoutTheme(layout, plotTheme, ["xaxis", "yaxis"]);
   await Plotly.newPlot(mapPlot, traces, layout, { responsive: true, displaylogo: false });
   mapPlot.dataset.resultMapInitialized = "1";
   if (typeof mapPlot.removeAllListeners === "function") {
@@ -4407,10 +5057,88 @@ function attachHandlers() {
       await syncExploreBoundsShape(null);
     });
   }
+  if (mapDriverSourceInput) {
+    mapDriverSourceInput.addEventListener("change", async () => {
+      syncMapSourceControls();
+      if (isCustomMapDriverSelected()) {
+        applyUploadedMapDriverDefaults();
+      } else {
+        try {
+          await applyMapDriverDefaults(mapDriverDatasetInput?.value || "pdo");
+        } catch (error) {
+          setMapStatus(String(error), true);
+        }
+      }
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+  if (mapFieldSourceInput) {
+    mapFieldSourceInput.addEventListener("change", () => {
+      syncMapSourceControls();
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+  if (mapDriverFileInput) {
+    mapDriverFileInput.addEventListener("change", async () => {
+      try {
+        const file = mapDriverFileInput.files?.[0] || null;
+        if (file && mapDriverSourceInput) {
+          mapDriverSourceInput.value = "upload";
+          syncMapSourceControls();
+        }
+        await inspectMapDriverUploadFile(file);
+        invalidateMapPreparation({ hard: true });
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+    });
+  }
+  if (mapFieldFileInput) {
+    mapFieldFileInput.addEventListener("change", async () => {
+      try {
+        const file = mapFieldFileInput.files?.[0] || null;
+        if (file && mapFieldSourceInput) {
+          mapFieldSourceInput.value = "upload";
+          syncMapSourceControls();
+        }
+        await inspectMapFieldUploadFile(file);
+        invalidateMapPreparation({ hard: true });
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+    });
+  }
+  if (mapDriverDateSelect) {
+    mapDriverDateSelect.addEventListener("change", () => {
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+  if (mapDriverValueSelect) {
+    mapDriverValueSelect.addEventListener("change", () => {
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
+  if (mapFieldVariableSelect) {
+    mapFieldVariableSelect.addEventListener("change", () => {
+      renderMapSelectorMetadata();
+      renderMapDatasetDocs();
+      invalidateMapPreparation({ hard: true });
+    });
+  }
   if (mapDriverDatasetInput) {
     mapDriverDatasetInput.addEventListener("change", async () => {
       try {
-        await applyMapDriverDefaults(mapDriverDatasetInput.value);
+        if (!isCustomMapDriverSelected()) {
+          await applyMapDriverDefaults(mapDriverDatasetInput.value);
+        }
       } catch (error) {
         setMapStatus(String(error), true);
       }
@@ -4487,6 +5215,7 @@ function attachHandlers() {
   });
 }
 
+initTheme();
 setDownloadButtons(false);
 setStatusProgress();
 setMapDownloadButtons(false);
@@ -4501,6 +5230,7 @@ setMapProgress();
 setMapPhase("idle");
 refreshMapRunButtonState();
 setMapStatus("Load datasets to start exploration, then run SDC map.");
+syncMapSourceControls();
 if (mapSelectedCellText) {
   mapSelectedCellText.textContent =
     "Selected grid cell: none. Click the field heatmap to inspect a cell time series.";
@@ -4511,9 +5241,13 @@ attachHandlers();
 void (async () => {
   await fetchMapCatalog();
   try {
-    await applyMapDriverDefaults(mapDriverDatasetInput?.value || "pdo");
+    if (!isCustomMapDriverSelected()) {
+      await applyMapDriverDefaults(mapDriverDatasetInput?.value || "pdo");
+    }
   } catch (error) {
     setMapStatus(String(error), true);
   }
+  renderMapSelectorMetadata();
+  renderMapDatasetDocs();
   updateMapBoundsNotice();
 })();
