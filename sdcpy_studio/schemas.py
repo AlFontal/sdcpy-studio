@@ -79,23 +79,25 @@ class SDCMapJobRequest(BaseModel):
     driver_value_column: str | None = None
     field_upload_id: str | None = None
     field_variable: str | None = None
+    field_dimension_selections: dict[str, str] = Field(default_factory=dict)
     # Server-populated resolved file paths for uploaded assets.
     driver_upload_path: str | None = None
     field_upload_path: str | None = None
     driver_upload_filename: str | None = None
     field_upload_filename: str | None = None
 
-    fragment_size: int = Field(12, ge=2, le=256)
+    correlation_width: int = Field(12, ge=2, le=256)
+    n_positive_peaks: int = Field(3, ge=0, le=24)
+    n_negative_peaks: int = Field(3, ge=0, le=24)
+    base_state_beta: float = Field(0.5, gt=0.0, le=2.0)
     n_permutations: int = Field(49, ge=1, le=999)
     two_tailed: bool = False
     min_lag: int = -6
     max_lag: int = 6
     alpha: float = Field(0.05, gt=0.0, lt=1.0)
-    top_fraction: float = Field(0.25, gt=0.0, le=1.0)
 
     time_start: str | None = None
     time_end: str | None = None
-    peak_date: str | None = None
 
     lat_min: float | None = None
     lat_max: float | None = None
@@ -126,6 +128,8 @@ class SDCMapJobRequest(BaseModel):
                 raise ValueError("`field_upload_id` is required when `field_source_type` is 'upload'.")
             if not self.field_variable:
                 raise ValueError("`field_variable` is required when `field_source_type` is 'upload'.")
+        if self.n_positive_peaks == 0 and self.n_negative_peaks == 0:
+            raise ValueError("At least one of `n_positive_peaks` or `n_negative_peaks` must be > 0.")
         if self.min_lag > self.max_lag:
             raise ValueError("`min_lag` must be <= `max_lag`.")
         bounds = (self.lat_min, self.lat_max, self.lon_min, self.lon_max)
@@ -183,7 +187,97 @@ class DatasetInspectResponse(BaseModel):
     numeric_columns: list[str]
     datetime_columns: list[str]
     suggested_date_column: str | None = None
-    preview_rows: list[dict]
+    detected_delimiter: str | None = None
+    delimiter_name: str | None = None
+    warnings: list[InspectWarning] = Field(default_factory=list)
+    preview_rows: list[dict[str, str]]
+
+
+class InspectWarning(BaseModel):
+    """Structured warning surfaced during upload inspection."""
+
+    code: str
+    message: str
+    columns: list[str] = Field(default_factory=list)
+
+
+class DriverDefaults(BaseModel):
+    """Suggested default time window derived from the uploaded driver series."""
+
+    time_start: str | None = None
+    time_end: str | None = None
+    driver_min_date: str | None = None
+    driver_max_date: str | None = None
+    n_points: int | None = None
+
+
+class DriverEventPreviewItem(BaseModel):
+    """Preview of one detected driver event."""
+
+    index: int | None = None
+    date: str
+    value: float
+    sign: Literal["positive", "negative"]
+
+
+class DriverEventCatalog(BaseModel):
+    """Detected driver events and base-state summary used by SDC Map."""
+
+    selected_positive: list[DriverEventPreviewItem] = Field(default_factory=list)
+    selected_negative: list[DriverEventPreviewItem] = Field(default_factory=list)
+    ignored_positive: list[DriverEventPreviewItem] = Field(default_factory=list)
+    ignored_negative: list[DriverEventPreviewItem] = Field(default_factory=list)
+    base_state_threshold: float | None = None
+    base_state_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class FieldDims(BaseModel):
+    """Normalized field dimensions exposed to the UI."""
+
+    time: int = 0
+    lat: int = 0
+    lon: int = 0
+
+
+class FieldNormalizationInfo(BaseModel):
+    """Normalization details applied to a compatible field variable."""
+
+    original_dims: list[str] = Field(default_factory=list)
+    squeezed_dims: list[str] = Field(default_factory=list)
+    selected_dimensions: dict[str, str] = Field(default_factory=dict)
+
+
+class IncompatibleVariable(BaseModel):
+    """Reason a NetCDF variable could not be used as a map field."""
+
+    name: str
+    reason: str
+
+
+class FieldSelectorOption(BaseModel):
+    """Single selectable coordinate value for an extra NetCDF dimension."""
+
+    value: str
+    label: str
+
+
+class FieldSelectorDefinition(BaseModel):
+    """Selector required to use a variable with non-spatial extra dimensions."""
+
+    dimension: str
+    label: str
+    options: list[FieldSelectorOption] = Field(default_factory=list)
+    suggested_value: str | None = None
+
+
+class FieldVariableOption(BaseModel):
+    """Variable-level compatibility metadata for uploaded NetCDF files."""
+
+    name: str
+    selectors: list[FieldSelectorDefinition] = Field(default_factory=list)
+    normalization: FieldNormalizationInfo = Field(default_factory=FieldNormalizationInfo)
+    warnings: list[InspectWarning] = Field(default_factory=list)
 
 
 class SDCMapDriverUploadInspectResponse(BaseModel):
@@ -197,8 +291,13 @@ class SDCMapDriverUploadInspectResponse(BaseModel):
     datetime_columns: list[str]
     suggested_date_column: str | None = None
     suggested_value_column: str | None = None
-    preview_rows: list[dict]
-    defaults: dict
+    detected_delimiter: str | None = None
+    delimiter_name: str | None = None
+    rejected_numeric_columns: list[str] = Field(default_factory=list)
+    warnings: list[InspectWarning] = Field(default_factory=list)
+    preview_rows: list[dict[str, str]]
+    defaults: DriverDefaults
+    event_catalog: DriverEventCatalog = Field(default_factory=DriverEventCatalog)
 
 
 class SDCMapFieldUploadInspectResponse(BaseModel):
@@ -208,8 +307,12 @@ class SDCMapFieldUploadInspectResponse(BaseModel):
     filename: str
     variables: list[str]
     compatible_variables: list[str]
+    variable_options: list[FieldVariableOption] = Field(default_factory=list)
+    incompatible_variables: list[IncompatibleVariable] = Field(default_factory=list)
     suggested_variable: str | None = None
-    dims: dict[str, int]
+    dims: FieldDims
+    normalization: FieldNormalizationInfo = Field(default_factory=FieldNormalizationInfo)
+    warnings: list[InspectWarning] = Field(default_factory=list)
     time_start: str | None = None
     time_end: str | None = None
     lat_min: float | None = None
@@ -253,6 +356,8 @@ class SDCMapJobResultPayload(BaseModel):
     """Result payload returned for completed SDC map jobs."""
 
     summary: dict
+    event_catalog: DriverEventCatalog = Field(default_factory=DriverEventCatalog)
+    class_results: dict[str, dict] = Field(default_factory=dict)
     notes: list[str]
     runtime_seconds: float
     figure_png_base64: str
@@ -264,6 +369,7 @@ class SDCMapExploreResultPayload(BaseModel):
     """Payload returned by the pre-run map exploration endpoint."""
 
     summary: dict
+    event_catalog: DriverEventCatalog = Field(default_factory=DriverEventCatalog)
     time_index: list[str]
     driver_values: list[float | None]
     lat: list[float]
@@ -277,6 +383,22 @@ class SDCMapExploreResponse(BaseModel):
 
     status: Literal["ready"]
     result: SDCMapExploreResultPayload
+
+
+class SDCMapDriverPreviewPayload(BaseModel):
+    """Lightweight driver-only preview used by the map configuration UI."""
+
+    summary: dict
+    event_catalog: DriverEventCatalog = Field(default_factory=DriverEventCatalog)
+    time_index: list[str]
+    driver_values: list[float | None]
+
+
+class SDCMapDriverPreviewResponse(BaseModel):
+    """Top-level response for the driver preview endpoint."""
+
+    status: Literal["ready"]
+    result: SDCMapDriverPreviewPayload
 
 
 class JobResultResponse(BaseModel):

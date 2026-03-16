@@ -20,11 +20,7 @@ COPY pyproject.toml uv.lock README.md /app/
 COPY sdcpy_studio /app/sdcpy_studio
 COPY scripts /app/scripts
 
-RUN if [ "$INSTALL_MAP_DEPS" = "1" ]; then \
-        uv sync --frozen --no-dev --extra map; \
-      else \
-        uv sync --frozen --no-dev; \
-      fi
+RUN uv sync --no-dev --no-sources --no-editable
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

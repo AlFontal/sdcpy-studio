@@ -454,14 +454,20 @@
                       <option value="oisst_v2_sst">oisst_v2_sst</option>
                     </select>
                   </label>
-                  <label>Fragment size
-                    <input id="map_fragment_size" type="number" min="2" value="12" />
+                  <label>Correlation width (r_w)
+                    <input id="map_correlation_width" type="number" min="2" value="12" />
                   </label>
                   <label>Significance alpha
                     <input id="map_alpha" type="number" min="0.001" max="0.999" step="0.001" value="0.05" />
                   </label>
-                  <label>Top fraction
-                    <input id="map_top_fraction" type="number" min="0.01" max="1" step="0.01" value="0.25" />
+                  <label>Positive events (N+)
+                    <input id="map_n_positive_peaks" type="number" min="0" max="24" value="3" />
+                  </label>
+                  <label>Negative events (N-)
+                    <input id="map_n_negative_peaks" type="number" min="0" max="24" value="3" />
+                  </label>
+                  <label>Base-state beta
+                    <input id="map_base_state_beta" type="number" min="0.05" max="2" step="0.05" value="0.5" />
                   </label>
                   <label>Permutations
                     <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
@@ -510,9 +516,15 @@
                           <option value="">Upload NetCDF first</option>
                         </select>
                       </label>
+                      <div
+                        id="map_field_dimension_selectors"
+                        class="map-dimension-selectors"
+                        data-testid="map-field-dimension-selectors"
+                        hidden
+                      ></div>
                     </div>
                     <p id="map_field_upload_status" class="hint map-upload-status" data-testid="map-field-upload-status">
-                      Upload a NetCDF with a 3D variable using time/lat/lon dimensions.
+                      Upload a NetCDF with time/lat/lon dimensions. Extra dimensions can be normalized or selected when supported.
                     </p>
                   </div>
                 </div>
@@ -537,10 +549,17 @@
                   <label>Time end
                     <input id="map_time_end" type="date" value="" />
                   </label>
-                  <label>Peak date
-                    <input id="map_peak_date" type="date" value="" />
-                  </label>
                 </div>
+                <section class="map-event-preview-panel" aria-label="Detected driver events">
+                  <div class="map-event-preview-header">
+                    <p class="map-meta-title">Detected driver events</p>
+                    <span class="map-select-meta">Auto-detected preview from the current driver window.</span>
+                  </div>
+                  <div id="map_event_preview_chart" class="map-event-preview-chart" data-testid="map-event-preview-chart"></div>
+                  <div id="map_event_preview" class="map-event-preview">
+                    Load a driver to preview positive and negative events plus the base state.
+                  </div>
+                </section>
                 <div class="map-action-row">
                   <button id="map_load" class="btn secondary" type="button">Load driver + dataset</button>
                   <button id="map_run" class="btn" type="button" disabled>Run SDC map</button>
@@ -583,6 +602,25 @@
                 <p id="map_status" class="hint plot-controls-hint">
                   Load datasets to start the exploration phase.
                 </p>
+                <details id="map_methodology_docs" class="map-docs map-methodology-docs">
+                  <summary>SDC Map methodology</summary>
+                  <div class="map-docs-content map-methodology-content">
+                    <p><strong>What the app actually does</strong></p>
+                    <ol>
+                      <li>Align the driver series and the gridded field on the same valid time axis for the selected date window and field subset.</li>
+                      <li>Detect local positive and negative extrema in the driver, rank them by magnitude, enforce a minimum separation of <code>r_w</code>, and keep up to <code>N+</code> and <code>N-</code>.</li>
+                      <li>Build the base state from aligned time steps where <code>|driver| &lt; beta * x0</code>, with <code>x0</code> equal to the weakest selected event magnitude. Selected event windows are excluded from that baseline.</li>
+                      <li>Subtract the base-state mean field from the aligned field so the mapped response is measured relative to the inferred normal state.</li>
+                      <li>For each selected event and each grid cell, extract event-local fragments of width <code>r_w</code> and test lagged driver-vs-field correlations only inside that local event neighborhood.</li>
+                      <li>Use the permutation test configured in the UI to keep only significant event-local correlations at the selected <code>alpha</code> level.</li>
+                      <li>Average the retained event-local summaries separately for the positive and negative event classes.</li>
+                      <li>Render the active class as static <code>A/B/C/D</code> summary maps plus a lag-resolved explorer. Time units are inferred from the actual dataset cadence and shown as days, weeks, months, years, or generic time steps.</li>
+                    </ol>
+                    <p><strong>How to read the outputs</strong></p>
+                    <p><code>A</code> is the strongest retained correlation, <code>B</code> is the retained driver-fragment position relative to the event peak, <code>C</code> is the retained lag between driver and field fragments, and <code>D</code> is the retained field timing relative to the event peak.</p>
+                    <p class="hint">This follows the event-conditioned workflow documented in <code>docs/sdc_explained.md</code> and matches the current package implementation.</p>
+                  </div>
+                </details>
                 <details id="map_dataset_docs" class="map-docs">
                   <summary>Dataset documentation</summary>
                   <div id="map_dataset_docs_content" class="map-docs-content">
@@ -595,7 +633,7 @@
               <div id="map_phase_badge" class="map-phase-badge">Phase: idle</div>
               <div id="map_explore_controls" class="map-explore-controls" hidden>
                 <p id="map_bounds_notice" class="hint map-bounds-alert">
-                  No bounds selected: full map will be computed. Modebar: Draw rectangle sets bounds, Pan selects grid cells for the comparison series.
+                  No bounds selected: full map will be computed. Use Draw rectangle to set map bounds before running.
                 </p>
                 <div class="map-slider-row">
                   <button id="map_time_play" class="btn secondary map-play-btn" type="button" aria-pressed="false" title="Play">
@@ -612,7 +650,42 @@
                   <button id="map_clear_bounds" class="btn secondary" type="button">Use full map bounds</button>
                 </div>
               </div>
-              <div id="map_result_tabs" class="map-result-tabs" role="tablist" aria-label="SDC map layers" hidden></div>
+              <div id="map_class_tabs" class="map-result-tabs map-class-tabs" role="tablist" aria-label="SDC map event classes" hidden></div>
+              <section id="map_static_summary_section" class="map-static-summary" hidden>
+                <div class="map-static-summary-header">
+                  <h3>Static Summary Maps</h3>
+                  <p class="hint">A/B/C/D outputs for the active event class. Hover <code>?</code> for definitions.</p>
+                </div>
+                <div id="map_static_summary_grid" class="map-static-summary-grid"></div>
+              </section>
+              <div id="map_result_lag_controls" class="map-result-lag-controls" hidden>
+                <label class="range-field">Lag
+                  <div class="range-meta">
+                    <input
+                      id="map_result_lag_slider"
+                      data-testid="map-result-lag-slider"
+                      type="range"
+                      step="1"
+                      min="-6"
+                      max="6"
+                      value="0"
+                    />
+                    <output id="map_result_lag_value" for="map_result_lag_slider">0</output>
+                  </div>
+                </label>
+                <label>Lag (numeric)
+                  <input
+                    id="map_result_lag_number"
+                    data-testid="map-result-lag-number"
+                    type="number"
+                    step="1"
+                    value="0"
+                  />
+                </label>
+                <p id="map_result_lag_meta" class="hint">
+                  Peak-averaged correlation map for the selected lag.
+                </p>
+              </div>
               <div class="map-results-shell">
                 <div id="sdc_map_plot" class="plot map-plot" data-testid="sdc-map-plot"></div>
                 <section class="explorer-downloads map-downloads-side" aria-label="map-downloads">
@@ -620,16 +693,15 @@
                   <div class="download-grid map-download-grid">
                     <button id="map_download_png" class="download-tile" type="button" disabled>
                       <span class="download-ext">.png</span>
-                      <span class="download-label">Matplotlib figure (4 layers)</span>
+                      <span id="map_download_png_label" class="download-label">Active-class map report</span>
                     </button>
                     <button id="map_download_nc" class="download-tile" type="button" disabled>
                       <span class="download-ext">.nc</span>
-                      <span class="download-label">Layer fields (NetCDF)</span>
+                      <span class="download-label">Positive + negative lag maps</span>
                     </button>
                   </div>
                 </section>
               </div>
-              <p id="map_selected_cell" class="hint map-selected-cell"></p>
               <div id="sdc_map_summary" class="summary-grid summary-grid-map"></div>
             </div>
           </div>

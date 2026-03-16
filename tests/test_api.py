@@ -75,8 +75,55 @@ class InlineJobManager:
             "summary": {
                 "driver_dataset": request.driver_dataset,
                 "field_dataset": request.field_dataset,
-                "fragment_size": request.fragment_size,
+                "correlation_width": request.correlation_width,
                 "valid_cells": 12,
+            },
+            "event_catalog": {
+                "selected_positive": [{"date": "2010-01-01", "value": 1.2, "sign": "positive"}],
+                "selected_negative": [{"date": "2010-07-01", "value": -1.1, "sign": "negative"}],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.55,
+                "base_state_count": 18,
+                "warnings": [],
+            },
+            "class_results": {
+                "positive": {
+                    "summary": {"selected_event_count": 1, "valid_cells": 12, "lag_valid_cells": [12]},
+                    "layer_maps": {
+                        "lat": [0.0],
+                        "lon": [0.0],
+                        "coastline": {"lat": [None], "lon": [None]},
+                        "layers": [],
+                    },
+                    "lag_maps": {
+                        "lat": [0.0],
+                        "lon": [0.0],
+                        "lags": [0],
+                        "coastline": {"lat": [None], "lon": [None]},
+                        "corr_by_lag": [[[0.6]]],
+                        "event_count_by_lag": [[[1]]],
+                    },
+                    "empty_reason": None,
+                },
+                "negative": {
+                    "summary": {"selected_event_count": 1, "valid_cells": 9, "lag_valid_cells": [9]},
+                    "layer_maps": {
+                        "lat": [0.0],
+                        "lon": [0.0],
+                        "coastline": {"lat": [None], "lon": [None]},
+                        "layers": [],
+                    },
+                    "lag_maps": {
+                        "lat": [0.0],
+                        "lon": [0.0],
+                        "lags": [0],
+                        "coastline": {"lat": [None], "lon": [None]},
+                        "corr_by_lag": [[[-0.5]]],
+                        "event_count_by_lag": [[[1]]],
+                    },
+                    "empty_reason": None,
+                },
             },
             "notes": [],
             "runtime_seconds": 0.12,
@@ -84,10 +131,12 @@ class InlineJobManager:
             "download_formats": ["png", "nc"],
             "_artifacts_map": {
                 "png": b"\x89PNG\r\n\x1a\n",
+                "png_positive": b"\x89PNG\r\n\x1a\nPOS",
+                "png_negative": b"\x89PNG\r\n\x1a\nNEG",
                 "nc": b"CDF\x01",
                 "driver_dataset": request.driver_dataset,
                 "field_dataset": request.field_dataset,
-                "fragment_size": request.fragment_size,
+                "correlation_width": request.correlation_width,
             },
         }
         self.jobs[job_id] = job
@@ -163,6 +212,66 @@ def _custom_map_field_netcdf_bytes() -> bytes:
             "sst_anom": (("time", "lat", "lon"), values.astype("float32")),
             "bad2d": (("lat", "lon"), values[0].astype("float32")),
         },
+        coords={"time": times, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
+
+
+def _custom_map_field_singleton_level_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    times = np.array([f"2000-{m:02d}-01" for m in range(1, 7)], dtype="datetime64[ns]")
+    levels = np.array([2.0], dtype=float)
+    lats = np.array([-10.0, 0.0, 10.0], dtype=float)
+    lons = np.array([120.0, 140.0, 160.0, 180.0], dtype=float)
+    tt, ll, yy, xx = np.meshgrid(
+        np.arange(times.size),
+        np.arange(levels.size),
+        lats,
+        lons,
+        indexing="ij",
+    )
+    values = np.sin(tt / 2.0) + 0.05 * ll + 0.1 * yy + 0.01 * xx
+    ds = xr.Dataset(
+        data_vars={"air": (("time", "level", "lat", "lon"), values.astype("float32"))},
+        coords={"time": times, "level": levels, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
+
+
+def _custom_map_field_multilevel_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    times = np.array([f"2000-{m:02d}-01" for m in range(1, 5)], dtype="datetime64[ns]")
+    levels = np.array([850.0, 500.0], dtype=float)
+    lats = np.array([-10.0, 10.0], dtype=float)
+    lons = np.array([120.0, 150.0], dtype=float)
+    tt, ll, yy, xx = np.meshgrid(
+        np.arange(times.size),
+        np.arange(levels.size),
+        lats,
+        lons,
+        indexing="ij",
+    )
+    values = np.sin(tt / 2.0) + 0.2 * ll + 0.1 * yy + 0.01 * xx
+    ds = xr.Dataset(
+        data_vars={"air": (("time", "level", "lat", "lon"), values.astype("float32"))},
+        coords={"time": times, "level": levels, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
+
+
+def _custom_map_field_multilevel_without_coord_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    times = np.array([f"2000-{m:02d}-01" for m in range(1, 5)], dtype="datetime64[ns]")
+    lats = np.array([-10.0, 10.0], dtype=float)
+    lons = np.array([120.0, 150.0], dtype=float)
+    values = np.arange(times.size * 3 * lats.size * lons.size, dtype="float32").reshape(
+        times.size, 3, lats.size, lons.size
+    )
+    ds = xr.Dataset(
+        data_vars={"air": (("time", "member", "lat", "lon"), values)},
         coords={"time": times, "lat": lats, "lon": lons},
     )
     payload = ds.to_netcdf()
@@ -446,15 +555,16 @@ def test_map_job_endpoints():
         json={
             "driver_dataset": "pdo",
             "field_dataset": "ncep_air",
-            "fragment_size": 12,
+            "correlation_width": 12,
+            "n_positive_peaks": 3,
+            "n_negative_peaks": 3,
+            "base_state_beta": 0.5,
             "alpha": 0.05,
-            "top_fraction": 0.25,
             "n_permutations": 49,
             "min_lag": -6,
             "max_lag": 6,
             "time_start": "2010-01-01",
             "time_end": "2012-12-01",
-            "peak_date": "2011-01-01",
         },
     )
     assert submit.status_code == 200
@@ -469,11 +579,23 @@ def test_map_job_endpoints():
     payload = result.json()["result"]
     assert payload["summary"]["driver_dataset"] == "pdo"
     assert payload["download_formats"] == ["png", "nc"]
+    assert payload["summary"]["correlation_width"] == 12
 
     png = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png")
     assert png.status_code == 200
     assert png.headers["content-type"] == "image/png"
     assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert 'positive_negative.png"' in png.headers["content-disposition"]
+
+    png_positive = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png?sign=positive")
+    assert png_positive.status_code == 200
+    assert png_positive.content.endswith(b"POS")
+    assert 'positive.png"' in png_positive.headers["content-disposition"]
+
+    png_negative = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png?sign=negative")
+    assert png_negative.status_code == 200
+    assert png_negative.content.endswith(b"NEG")
+    assert 'negative.png"' in png_negative.headers["content-disposition"]
 
     nc = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/nc")
     assert nc.status_code == 200
@@ -497,7 +619,8 @@ def test_map_custom_upload_inspection_endpoints():
     assert "date" in driver["datetime_columns"]
     assert "my_index" in driver["numeric_columns"]
     assert driver["suggested_date_column"] == "date"
-    assert driver["defaults"]["peak_date"]
+    assert driver["defaults"]["time_start"]
+    assert "event_catalog" in driver
 
     field_resp = client.post(
         "/api/v1/sdc-map/field/inspect",
@@ -519,6 +642,148 @@ def test_map_custom_upload_inspection_endpoints():
     assert field["dims"]["time"] == 12
     assert field["dims"]["lat"] == 3
     assert field["dims"]["lon"] == 4
+
+
+def test_map_driver_inspect_accepts_semicolon_delimited_csv():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    rows = ["date;my_index;alt_series"]
+    for idx in range(12):
+        rows.append(f"2000-{idx + 1:02d}-01;{idx / 10:.3f};{1 - idx / 20:.3f}")
+    payload = "\n".join(rows)
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={"driver_file": ("driver.csv", BytesIO(payload.encode("utf-8")), "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["detected_delimiter"] == ";"
+    assert body["delimiter_name"] == "semicolon"
+    assert body["suggested_date_column"] == "date"
+    assert body["suggested_value_column"] == "my_index"
+
+
+def test_map_driver_inspect_reports_auto_selected_numeric_column_warning():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    rows = ["date,driver_index,alt_series"]
+    alt_values = [1.0, 0.95, 0.87, 0.75, 0.61, 0.44, 0.26, 0.07, -0.12, -0.30, -0.48, -0.62]
+    for idx, alt_value in enumerate(alt_values, start=1):
+        driver_value = "oops" if idx in {2, 5, 8, 11} else f"{idx / 10:.3f}"
+        rows.append(f"1998-{idx:02d}-01,{driver_value},{alt_value:.3f}")
+    payload = "\n".join(rows)
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={"driver_file": ("driver.csv", BytesIO(payload.encode("utf-8")), "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_value_column"] == "alt_series"
+    assert "driver_index" in body["rejected_numeric_columns"]
+    assert any(warning["code"] == "series_auto_selected" for warning in body["warnings"])
+
+
+def test_map_field_inspect_accepts_singleton_level_dimension():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "air.2m.mon.mean.nc",
+                BytesIO(_custom_map_field_singleton_level_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_variable"] == "air"
+    assert body["dims"] == {"time": 6, "lat": 3, "lon": 4}
+    assert body["normalization"]["original_dims"] == ["time", "level", "lat", "lon"]
+    assert body["normalization"]["squeezed_dims"] == ["level"]
+    assert any(warning["code"] == "singleton_dimensions_squeezed" for warning in body["warnings"])
+
+
+def test_map_field_inspect_exposes_selector_for_multilevel_dimension():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "air.multilevel.nc",
+                BytesIO(_custom_map_field_multilevel_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_variable"] == "air"
+    assert body["compatible_variables"] == ["air"]
+    assert body["dims"] == {"time": 4, "lat": 2, "lon": 2}
+    assert body["normalization"]["selected_dimensions"] == {"level": "850"}
+    variable_option = body["variable_options"][0]
+    assert variable_option["name"] == "air"
+    assert variable_option["selectors"][0]["dimension"] == "level"
+    assert variable_option["selectors"][0]["suggested_value"] == "850"
+    assert [option["value"] for option in variable_option["selectors"][0]["options"]] == ["850", "500"]
+    assert any(warning["code"] == "dimension_selection_available" for warning in body["warnings"])
+
+
+def test_map_field_inspect_rejects_non_singleton_dimension_without_coordinate_values():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "air.members.nc",
+                BytesIO(_custom_map_field_multilevel_without_coord_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert "No compatible variable found in NetCDF" in response.json()["detail"]
+    assert "selectable coordinate axis" in response.json()["detail"]
+
+
+def test_map_field_inspect_falls_back_to_manual_time_decode(monkeypatch):
+    xr = pytest.importorskip("xarray")
+    original_open_dataset = xr.open_dataset
+
+    def fake_open_dataset(*args, **kwargs):
+        if kwargs.get("decode_times", True):
+            raise ValueError("raw xarray decode failure")
+        return original_open_dataset(*args, **kwargs)
+
+    monkeypatch.setattr(xr, "open_dataset", fake_open_dataset)
+
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "field.nc",
+                BytesIO(_custom_map_field_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_variable"] == "sst_anom"
+    assert any(warning["code"] == "time_axis_manually_decoded" for warning in body["warnings"])
 
 
 def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypatch):
@@ -560,7 +825,10 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
                 "field_dataset": "field.nc",
                 "time_start": "2000-01-01",
                 "time_end": "2001-12-01",
-                "peak_date": "2000-06-01",
+                "correlation_width": 12,
+                "n_positive_peaks": 3,
+                "n_negative_peaks": 3,
+                "base_state_beta": 0.5,
                 "n_time": 12,
                 "n_lat": 3,
                 "n_lon": 4,
@@ -582,6 +850,15 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
                 "field_source_type": "upload",
                 "field_variable": "sst_anom",
             },
+            "event_catalog": {
+                "selected_positive": [{"date": "2000-06-01", "value": 1.2, "sign": "positive"}],
+                "selected_negative": [{"date": "2001-01-01", "value": -1.1, "sign": "negative"}],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.55,
+                "base_state_count": 8,
+                "warnings": [],
+            },
             "time_index": ["2000-01-01"],
             "driver_values": [0.1],
             "lat": [-10.0],
@@ -602,10 +879,12 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
         "driver_value_column": driver["suggested_value_column"],
         "field_upload_id": field["upload_id"],
         "field_variable": field["suggested_variable"],
-        "fragment_size": 12,
+        "correlation_width": 12,
+        "n_positive_peaks": 3,
+        "n_negative_peaks": 3,
+        "base_state_beta": 0.5,
         "n_permutations": 9,
         "alpha": 0.05,
-        "top_fraction": 0.25,
         "min_lag": -4,
         "max_lag": 4,
     }
@@ -623,7 +902,110 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
     job_id = submit.json()["job_id"]
     result = client.get(f"/api/v1/jobs/sdc-map/{job_id}/result")
     assert result.status_code == 200
-    assert result.json()["result"]["summary"]["fragment_size"] == 12
+    assert result.json()["result"]["summary"]["correlation_width"] == 12
+
+
+def test_map_custom_upload_submit_and_explore_pass_field_dimension_selections(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    driver_resp = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={
+            "driver_file": (
+                "driver.csv",
+                BytesIO(_custom_map_driver_csv().encode("utf-8")),
+                "text/csv",
+            )
+        },
+    )
+    field_resp = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "field-multilevel.nc",
+                BytesIO(_custom_map_field_multilevel_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert driver_resp.status_code == 200
+    assert field_resp.status_code == 200
+    driver = driver_resp.json()
+    field = field_resp.json()
+
+    captured = {}
+
+    def fake_build(payload):
+        captured["explore"] = payload
+        return {
+            "summary": {
+                "driver_dataset": "driver.csv",
+                "field_dataset": "field-multilevel.nc",
+                "time_start": "2000-01-01",
+                "time_end": "2000-04-01",
+                "correlation_width": 12,
+                "n_positive_peaks": 3,
+                "n_negative_peaks": 3,
+                "base_state_beta": 0.5,
+                "n_time": 4,
+                "n_lat": 2,
+                "n_lon": 2,
+                "valid_values": 16,
+                "valid_rate": 1.0,
+                "field_lat_min": -10.0,
+                "field_lat_max": 10.0,
+                "field_lon_min": 120.0,
+                "field_lon_max": 150.0,
+                "full_bounds_selected": True,
+                "driver_source_type": "upload",
+                "field_source_type": "upload",
+                "field_variable": "air",
+                "field_dimension_selections": {"level": "850"},
+            },
+            "event_catalog": {
+                "selected_positive": [{"date": "2000-02-01", "value": 0.8, "sign": "positive"}],
+                "selected_negative": [],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.4,
+                "base_state_count": 2,
+                "warnings": [],
+            },
+            "time_index": ["2000-01-01"],
+            "driver_values": [0.1],
+            "lat": [-10.0],
+            "lon": [120.0],
+            "field_frames": [[[0.2]]],
+            "coastline": {"lat": [None], "lon": [None]},
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_exploration", fake_build)
+
+    explore_payload = {
+        "driver_dataset": "custom_driver",
+        "field_dataset": "custom_field",
+        "driver_source_type": "upload",
+        "field_source_type": "upload",
+        "driver_upload_id": driver["upload_id"],
+        "driver_date_column": driver["suggested_date_column"],
+        "driver_value_column": driver["suggested_value_column"],
+        "field_upload_id": field["upload_id"],
+        "field_variable": field["suggested_variable"],
+        "field_dimension_selections": {"level": "850"},
+        "correlation_width": 12,
+        "n_positive_peaks": 3,
+        "n_negative_peaks": 3,
+        "base_state_beta": 0.5,
+        "n_permutations": 9,
+        "alpha": 0.05,
+        "min_lag": -4,
+        "max_lag": 4,
+    }
+
+    explore = client.post("/api/v1/sdc-map/explore", json=explore_payload)
+    assert explore.status_code == 200
+    assert captured["explore"]["field_dimension_selections"] == {"level": "850"}
 
 
 def test_map_explore_endpoint(monkeypatch):
@@ -632,7 +1014,24 @@ def test_map_explore_endpoint(monkeypatch):
 
     def _fake_explore(_payload):
         return {
-            "summary": {"driver_dataset": "pdo", "field_dataset": "ncep_air", "n_time": 3},
+            "summary": {
+                "driver_dataset": "pdo",
+                "field_dataset": "ncep_air",
+                "n_time": 3,
+                "correlation_width": 12,
+                "n_positive_peaks": 3,
+                "n_negative_peaks": 3,
+                "base_state_beta": 0.5,
+            },
+            "event_catalog": {
+                "selected_positive": [{"date": "2010-02-01", "value": 0.9, "sign": "positive"}],
+                "selected_negative": [{"date": "2010-03-01", "value": -0.8, "sign": "negative"}],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.45,
+                "base_state_count": 1,
+                "warnings": [],
+            },
             "time_index": ["2010-01-01", "2010-02-01", "2010-03-01"],
             "driver_values": [0.1, 0.2, 0.3],
             "lat": [10.0, 20.0],
@@ -687,13 +1086,73 @@ def test_map_defaults_endpoint(monkeypatch):
         "sdcpy_studio.main.get_sdc_map_driver_defaults",
         lambda key: {
             "driver_dataset": key,
-            "peak_date": "2015-01-01",
             "time_start": "2012-01-01",
             "time_end": "2018-01-01",
+            "driver_min_date": "2012-01-01",
+            "driver_max_date": "2018-01-01",
+            "n_points": 84,
+            "event_catalog": {
+                "selected_positive": [{"date": "2015-01-01", "value": 1.1, "sign": "positive"}],
+                "selected_negative": [{"date": "2016-01-01", "value": -1.0, "sign": "negative"}],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.5,
+                "base_state_count": 12,
+                "warnings": [],
+            },
         },
     )
     response = client.get("/api/v1/sdc-map/defaults?driver_dataset=pdo")
     assert response.status_code == 200
     payload = response.json()
     assert payload["driver_dataset"] == "pdo"
-    assert payload["peak_date"] == "2015-01-01"
+    assert payload["event_catalog"]["selected_positive"][0]["date"] == "2015-01-01"
+
+
+def test_map_driver_preview_endpoint(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    monkeypatch.setattr(
+        "sdcpy_studio.main.build_sdc_map_driver_preview",
+        lambda payload: {
+            "summary": {
+                "driver_dataset": payload["driver_dataset"],
+                "time_start": "2000-01-01",
+                "time_end": "2001-12-01",
+                "correlation_width": 12,
+                "n_positive_peaks": 2,
+                "n_negative_peaks": 1,
+                "base_state_beta": 0.5,
+                "n_points": 24,
+            },
+            "event_catalog": {
+                "selected_positive": [{"date": "2000-08-01", "value": 1.1, "sign": "positive"}],
+                "selected_negative": [{"date": "2001-01-01", "value": -0.9, "sign": "negative"}],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.45,
+                "base_state_count": 8,
+                "warnings": [],
+            },
+            "time_index": ["2000-01-01", "2000-02-01"],
+            "driver_values": [0.1, 0.3],
+        },
+    )
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/preview",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 2,
+            "n_negative_peaks": 1,
+            "base_state_beta": 0.5,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["result"]["summary"]["n_positive_peaks"] == 2
+    assert payload["result"]["event_catalog"]["selected_positive"][0]["date"] == "2000-08-01"

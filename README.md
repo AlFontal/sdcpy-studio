@@ -9,7 +9,7 @@
 
 It offers two workflows:
 - `2-Way SDC`: fast exploratory correlation analysis for paired time series.
-- `SDC Map (beta)`: map-based exploration and SDC map computation over gridded fields.
+- `SDC Map (beta)`: event-conditioned mapping over gridded fields using separate positive and negative driver-event classes.
 
 ## Visual Tour
 ### Home and main workflow
@@ -26,8 +26,11 @@ It offers two workflows:
 ```bash
 git clone https://github.com/AlFontal/sdcpy-studio.git
 cd sdcpy-studio
-uv sync --extra dev --extra map
+uv sync --extra dev
 ```
+
+Map support is bundled in the main install, including the NetCDF runtime dependencies used by custom field uploads.
+If `../sdcpy-map` exists, `uv` is configured to use that sibling checkout in editable mode during local development.
 
 ### 2) Run the app
 ```bash
@@ -65,8 +68,21 @@ docker compose down -v
 - Upload CSV data or paste two series directly.
 - Run asynchronous analysis and monitor progress.
 - Explore 2-way SDC outputs interactively.
-- Use SDC Map exploration with date slider, map bounds, and grid-cell comparison.
+- Use SDC Map exploration with a date slider, map bounds, and grid-cell comparison.
+- Preview detected positive events (`N+`) and negative events (`N-`) before launching a map run.
+- Run event-conditioned SDC maps with `Correlation width (r_w)`, `Base-state beta`, and separate positive/negative map outputs.
 - Download outputs for reports and sharing.
+
+## SDC Map Method
+The studio’s SDC Map workflow now follows the methodology in [docs/sdc_explained.md](docs/sdc_explained.md):
+
+- detect the strongest positive and negative driver events separately,
+- define the base state from `beta * x0` rather than a single peak date,
+- correlate centered driver event windows against lagged field windows instead of running one full-series map and filtering it afterward,
+- compute and display separate positive-event and negative-event map products,
+- keep `fragment size` terminology only for the 2-Way SDC workflow.
+
+If you are co-developing `sdcpy-studio` with a sibling checkout of `sdcpy-map`, `uv` will prefer that local source automatically.
 
 ## Tech Stack
 - FastAPI backend
@@ -76,7 +92,7 @@ docker compose down -v
 
 ## Development
 ```bash
-uv sync --extra dev --extra map
+uv sync --extra dev
 ruff check .
 uv run pytest -q
 npm run test:e2e:with-api
