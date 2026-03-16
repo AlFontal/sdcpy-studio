@@ -21,6 +21,7 @@ from sdcpy_studio.schemas import (
     JobSubmissionResponse,
     SDCJobFromDatasetRequest,
     SDCJobRequest,
+    SDCMapDriverPreviewResponse,
     SDCMapExploreResponse,
     SDCMapDriverUploadInspectResponse,
     SDCMapFieldUploadInspectResponse,
@@ -29,6 +30,7 @@ from sdcpy_studio.schemas import (
 )
 from sdcpy_studio.service import (
     build_job_request_from_dataset,
+    build_sdc_map_driver_preview,
     build_sdc_map_exploration,
     build_synthetic_example,
     export_job_artifact,
@@ -242,6 +244,15 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return SDCMapExploreResponse(status="ready", result=result)
 
+    @app.post("/api/v1/sdc-map/driver/preview", response_model=SDCMapDriverPreviewResponse)
+    async def preview_sdc_map_driver(payload: SDCMapJobRequest) -> SDCMapDriverPreviewResponse:
+        payload = _hydrate_map_upload_request(payload)
+        try:
+            result = build_sdc_map_driver_preview(payload.model_dump(mode="python"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return SDCMapDriverPreviewResponse(status="ready", result=result)
+
     @app.post("/api/v1/sdc-map/driver/inspect", response_model=SDCMapDriverUploadInspectResponse)
     async def inspect_sdc_map_driver(driver_file: Annotated[UploadFile, File(...)]) -> SDCMapDriverUploadInspectResponse:
         filename = driver_file.filename or "driver.csv"
@@ -347,7 +358,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/jobs/sdc-map/{job_id}/download/{fmt}")
-    async def download_map_result(job_id: str, fmt: str) -> Response:
+    async def download_map_result(job_id: str, fmt: str, sign: str | None = None) -> Response:
         job = app.state.job_manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
@@ -357,7 +368,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="Job still running.")
 
         try:
-            payload, media_type, filename = export_sdc_map_artifact(job.result, fmt)
+            payload, media_type, filename = export_sdc_map_artifact(job.result, fmt, sign=sign)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

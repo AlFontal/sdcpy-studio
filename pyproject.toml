@@ -18,6 +18,7 @@ classifiers = [
 ]
 dependencies = [
   "sdcpy>=0.7.1",
+  "sdcpy-map @ git+https://github.com/AlFontal/sdcpy-map.git@e83beea3d08386bea95079ea324523353a70bf40",
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
   "jinja2>=3.1.0",
@@ -25,13 +26,12 @@ dependencies = [
   "pandas>=2.0.2",
   "numpy>=1.24.3",
   "openpyxl>=3.1.0",
+  "cftime>=1.6.4",
+  "h5py>=3.10.0",
+  "netCDF4>=1.7.2",
 ]
 
 [project.optional-dependencies]
-map = [
-  "sdcpy-map @ git+https://github.com/AlFontal/sdcpy-map.git@main",
-  "h5py>=3.10.0",
-]
 dev = [
   "pytest>=8.0",
   "ruff>=0.8.0",
@@ -60,6 +60,9 @@ include = [
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.uv.sources]
+sdcpy-map = { path = "../sdcpy-map", editable = true }
 
 [tool.ruff]
 line-length = 100
