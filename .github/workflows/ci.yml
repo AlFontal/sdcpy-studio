@@ -37,7 +37,7 @@ jobs:
           cache: npm
 
       - name: Install Python dependencies
-        run: uv sync --extra dev --extra map
+        run: uv sync --extra dev --no-sources
 
       - name: Install Node dependencies
         run: npm ci
