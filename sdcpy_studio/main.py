@@ -86,7 +86,7 @@ def create_app(
     app = FastAPI(
         title="SDCpy Studio",
         description="A GUI for Interactive Scale-Dependent Correlation analysis.",
-        version="0.1.0",
+        version="0.1.1",
         lifespan=lifespan,
     )
     app.state.job_manager = manager
