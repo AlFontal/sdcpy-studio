@@ -263,6 +263,8 @@ The inspection step checks the uploaded files before the run:
 - for drivers, it looks for a usable date column and numeric series
 - for fields, it checks time, latitude, longitude, and any extra selectable dimensions such as level
 
+For mapped fields, the NetCDF must contain a true dated time axis. Monthly climatology files with only 12 month-of-year bins are useful as reference climatologies, but they are not valid event-aligned inputs for the current SDC Map workflow.
+
 ## Practical advice before running a map
 
 ### Start simple

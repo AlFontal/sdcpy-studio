@@ -245,6 +245,8 @@ The upload-inspection step checks the structure of the files before the run so t
 - which field variables are compatible
 - whether an extra dimension such as `level` needs to be selected
 
+For field uploads, the file must contain a real dated time series. Monthly climatology files with 12 month-of-year bins, such as NOAA `*.mon.ltm.*.nc`, are not valid SDC Map inputs because they cannot be aligned to the driver time axis.
+
 ## Frontend Assets
 
 Plotly is vendored into the image at [plotly-2.35.2.min.js](/Users/alejandro/projects/sdcpy-studio/sdcpy_studio/static/plotly-2.35.2.min.js), so deployments do not depend on an external CDN.

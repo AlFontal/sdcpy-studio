@@ -280,6 +280,38 @@ def _shift_years(value: date, years: int) -> date:
                 return date(year, month, 1)
 
 
+def _infer_series_cadence(index: pd.DatetimeIndex) -> str | None:
+    clean = pd.DatetimeIndex(index).sort_values()
+    if len(clean) < 3:
+        return None
+    inferred = pd.infer_freq(clean)
+    if inferred is None:
+        return None
+    freq = str(inferred).upper()
+    if freq in {"M", "ME", "MS"} or freq.startswith(("M-", "ME-", "MS-")):
+        return "monthly"
+    if freq in {"A", "AS", "Y", "YS", "YE"} or freq.startswith(("A-", "AS-", "Y-", "YS-", "YE-")):
+        return "yearly"
+    if freq.startswith("W-"):
+        return "weekly"
+    return None
+
+
+def _canonicalize_window_bounds(
+    start_value: date,
+    end_value: date,
+    *,
+    cadence: str | None,
+) -> tuple[date, date]:
+    if cadence == "monthly":
+        start_value = pd.Period(start_value.isoformat(), freq="M").start_time.date()
+        end_value = pd.Period(end_value.isoformat(), freq="M").end_time.date()
+    elif cadence == "yearly":
+        start_value = pd.Period(start_value.isoformat(), freq="Y").start_time.date()
+        end_value = pd.Period(end_value.isoformat(), freq="Y").end_time.date()
+    return start_value, end_value
+
+
 def _nearest_time_index(time_values: np.ndarray, target_date: str) -> int:
     if time_values.size == 0:
         return 0
@@ -372,9 +404,11 @@ def _derive_driver_defaults(driver: pd.Series) -> dict[str, object]:
 
     min_date = min(valid_dates)
     max_date = max(valid_dates)
+    cadence = _infer_series_cadence(pd.DatetimeIndex(clean.index))
+    time_start, time_end = _canonicalize_window_bounds(min_date, max_date, cadence=cadence)
     return {
-        "time_start": min_date.isoformat(),
-        "time_end": max_date.isoformat(),
+        "time_start": time_start.isoformat(),
+        "time_end": time_end.isoformat(),
         "driver_min_date": min_date.isoformat(),
         "driver_max_date": max_date.isoformat(),
         "n_points": int(len(clean)),
@@ -809,6 +843,43 @@ def _find_dimension_coordinate(data_array, dim_name: str):
     return None
 
 
+def _climatology_time_axis_error(data_array) -> str | None:
+    time_dim = _pick_coord_name(["time", "date", "datetime", "t"], [str(dim) for dim in data_array.dims])
+    if time_dim is None:
+        return None
+
+    time_coord = _find_dimension_coordinate(data_array, time_dim)
+    if time_coord is None:
+        return None
+
+    climatology_name = str(time_coord.attrs.get("climatology") or "").strip()
+    climo_period = str(time_coord.attrs.get("climo_period") or "").strip()
+    time_values = np.asarray(time_coord.values)
+    parsed_dates = [_as_calendar_date(value) for value in time_values]
+    valid_dates = [value for value in parsed_dates if value is not None]
+
+    looks_like_month_bins = False
+    if len(valid_dates) == int(time_coord.size) == 12:
+        months = sorted({value.month for value in valid_dates})
+        years = {value.year for value in valid_dates}
+        looks_like_month_bins = months == list(range(1, 13)) and len(years) == 1 and min(years) <= 1
+
+    if not climatology_name and not climo_period and not looks_like_month_bins:
+        return None
+
+    variable_label = f"'{data_array.name}'" if getattr(data_array, "name", None) else "This field variable"
+    if int(time_coord.size) == 12:
+        bin_text = "12 month-of-year climatology bins"
+    else:
+        bin_text = f"{int(time_coord.size)} climatology time bins"
+    period_text = f" for {climo_period}" if climo_period else ""
+    return (
+        f"{variable_label} uses a climatology-style time axis{period_text}. "
+        f"It provides {bin_text}, not a dated time series, so it cannot be aligned with the driver for SDC Map. "
+        "Use a time-resolved NetCDF such as '*.mon.mean.nc' instead."
+    )
+
+
 def _serialize_selector_value(value: object) -> str:
     parsed = _as_calendar_date(value)
     if parsed is not None:
@@ -884,6 +955,10 @@ def _describe_custom_field_variable(data_array) -> tuple[FieldNormalizationInfo,
         raise ValueError(
             "Field variable must have time/lat/lon dimensions (accepted aliases: time/date, lat/latitude, lon/longitude)."
         )
+
+    climatology_error = _climatology_time_axis_error(data_array)
+    if climatology_error:
+        raise ValueError(climatology_error)
 
     selectors: list[FieldSelectorDefinition] = []
     squeezed_dims: list[str] = []
@@ -1093,6 +1168,16 @@ def inspect_sdc_map_field_netcdf(dataset_path: Path | str, filename: str) -> dic
                 "normalization": normalization,
             }
         if not compatible:
+            climatology_reason = next(
+                (
+                    item.reason
+                    for item in incompatible
+                    if "climatology-style time axis" in str(item.reason)
+                ),
+                None,
+            )
+            if climatology_reason:
+                raise ValueError(climatology_reason)
             reason_preview = "; ".join(
                 f"{item.name}: {item.reason}" for item in incompatible[:3]
             )
@@ -2314,6 +2399,8 @@ def _resolve_map_time_window(
     time_end = _as_calendar_date(request.time_end or defaults["time_end"])
     if time_start is None or time_end is None:
         raise ValueError("`time_start` and `time_end` must be valid dates.")
+    cadence = _infer_series_cadence(pd.DatetimeIndex(driver_full.dropna().sort_index().index))
+    time_start, time_end = _canonicalize_window_bounds(time_start, time_end, cadence=cadence)
     if time_start > time_end:
         raise ValueError("`time_start` must be <= `time_end`.")
     return time_start.isoformat(), time_end.isoformat()

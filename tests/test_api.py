@@ -7,12 +7,13 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 from sdcpy_studio.main import create_app
 from sdcpy_studio.schemas import SDCJobRequest
-from sdcpy_studio.service import run_sdc_job
+from sdcpy_studio.service import build_sdc_map_exploration, run_sdc_job
 
 
 class InlineJobManager:
@@ -211,6 +212,16 @@ def _custom_map_driver_csv(n: int = 72) -> str:
     return "\n".join(rows)
 
 
+def _custom_map_driver_three_series_month_end_csv(n: int = 12, start: str = "2000-01-31") -> str:
+    rows = ["date,E+C,nino34+EMI,nino34+TNI"]
+    dates = pd.date_range(start, periods=n, freq="ME")
+    for i, ts in enumerate(dates):
+        rows.append(
+            f"{ts.date()},{np.sin(i / 3):.6f},{np.cos(i / 4):.6f},{np.sin(i / 5):.6f}"
+        )
+    return "\n".join(rows)
+
+
 def _custom_map_field_netcdf_bytes() -> bytes:
     xr = pytest.importorskip("xarray")
     times = np.array(
@@ -226,6 +237,21 @@ def _custom_map_field_netcdf_bytes() -> bytes:
             "sst_anom": (("time", "lat", "lon"), values.astype("float32")),
             "bad2d": (("lat", "lon"), values[0].astype("float32")),
         },
+        coords={"time": times, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
+
+
+def _custom_map_field_monthly_2000_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    times = np.array([f"2000-{m:02d}-01" for m in range(1, 13)], dtype="datetime64[ns]")
+    lats = np.array([-10.0, 0.0, 10.0], dtype=float)
+    lons = np.array([120.0, 140.0, 160.0, 180.0], dtype=float)
+    tt, yy, xx = np.meshgrid(np.arange(times.size), lats, lons, indexing="ij")
+    values = np.sin(tt / 2.0) + 0.1 * yy + 0.01 * xx
+    ds = xr.Dataset(
+        data_vars={"sst_anom": (("time", "lat", "lon"), values.astype("float32"))},
         coords={"time": times, "lat": lats, "lon": lons},
     )
     payload = ds.to_netcdf()
@@ -287,6 +313,33 @@ def _custom_map_field_multilevel_without_coord_netcdf_bytes() -> bytes:
     ds = xr.Dataset(
         data_vars={"air": (("time", "member", "lat", "lon"), values)},
         coords={"time": times, "lat": lats, "lon": lons},
+    )
+    payload = ds.to_netcdf()
+    return payload if isinstance(payload, bytes) else bytes(payload)
+
+
+def _custom_map_field_climatology_netcdf_bytes() -> bytes:
+    xr = pytest.importorskip("xarray")
+    time = xr.Variable(
+        ("time",),
+        np.arange(12, dtype=float),
+        attrs={
+            "units": "days since 2000-01-01 00:00:00",
+            "climatology": "climatology_bounds",
+            "climo_period": "1991/01/01 - 2020/12/31",
+            "standard_name": "time",
+        },
+    )
+    lats = np.array([-10.0, 10.0], dtype=float)
+    lons = np.array([120.0, 150.0], dtype=float)
+    values = np.arange(12 * lats.size * lons.size, dtype="float32").reshape(12, lats.size, lons.size)
+    bounds = np.column_stack([np.arange(12, dtype=float), np.arange(1, 13, dtype=float)])
+    ds = xr.Dataset(
+        data_vars={
+            "air": (("time", "lat", "lon"), values),
+            "climatology_bounds": (("time", "nbnds"), bounds),
+        },
+        coords={"time": time, "lat": lats, "lon": lons},
     )
     payload = ds.to_netcdf()
     return payload if isinstance(payload, bytes) else bytes(payload)
@@ -728,6 +781,30 @@ def test_map_driver_inspect_reports_auto_selected_numeric_column_warning():
     assert any(warning["code"] == "series_auto_selected" for warning in body["warnings"])
 
 
+def test_map_driver_inspect_canonicalizes_month_end_defaults():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/inspect",
+        files={
+            "driver_file": (
+                "enso-compound.csv",
+                BytesIO(_custom_map_driver_three_series_month_end_csv().encode("utf-8")),
+                "text/csv",
+            )
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suggested_date_column"] == "date"
+    assert body["suggested_value_column"] == "E+C"
+    assert body["defaults"]["time_start"] == "2000-01-01"
+    assert body["defaults"]["time_end"] == "2000-12-31"
+    assert body["defaults"]["driver_min_date"] == "2000-01-31"
+    assert body["defaults"]["driver_max_date"] == "2000-12-31"
+
+
 def test_map_field_inspect_accepts_singleton_level_dimension():
     app = create_app(job_manager=InlineJobManager())
     client = TestClient(app)
@@ -825,6 +902,78 @@ def test_map_field_inspect_falls_back_to_manual_time_decode(monkeypatch):
     body = response.json()
     assert body["suggested_variable"] == "sst_anom"
     assert any(warning["code"] == "time_axis_manually_decoded" for warning in body["warnings"])
+
+
+def test_map_field_inspect_rejects_climatology_time_axis():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/sdc-map/field/inspect",
+        files={
+            "field_file": (
+                "air.2m.mon.ltm.1991-2020.nc",
+                BytesIO(_custom_map_field_climatology_netcdf_bytes()),
+                "application/x-netcdf",
+            )
+        },
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "climatology-style time axis" in detail
+    assert "cannot be aligned with the driver for SDC Map" in detail
+    assert "*.mon.mean.nc" in detail
+
+
+def test_build_map_exploration_aligns_month_end_driver_upload(monkeypatch, tmp_path: Path):
+    gpd = pytest.importorskip("geopandas")
+
+    driver_path = tmp_path / "enso-compound.csv"
+    driver_path.write_text(_custom_map_driver_three_series_month_end_csv(), encoding="utf-8")
+    field_path = tmp_path / "field.nc"
+    field_path.write_bytes(_custom_map_field_monthly_2000_netcdf_bytes())
+
+    monkeypatch.setattr(
+        "sdcpy_studio.service.fetch_sdc_map_coastline_asset",
+        lambda data_dir: tmp_path / "coastline.zip",
+    )
+    monkeypatch.setattr(
+        "sdcpy_map.load_coastline",
+        lambda _path: gpd.GeoDataFrame({"geometry": []}, geometry="geometry", crs="EPSG:4326"),
+    )
+
+    result = build_sdc_map_exploration(
+        {
+            "driver_dataset": "enso-compound",
+            "field_dataset": "custom-field",
+            "driver_source_type": "upload",
+            "field_source_type": "upload",
+            "driver_upload_id": "driver-upload",
+            "driver_upload_path": str(driver_path),
+            "driver_upload_filename": driver_path.name,
+            "driver_date_column": "date",
+            "driver_value_column": "E+C",
+            "field_upload_id": "field-upload",
+            "field_upload_path": str(field_path),
+            "field_upload_filename": field_path.name,
+            "field_variable": "sst_anom",
+            "correlation_width": 4,
+            "n_positive_peaks": 2,
+            "n_negative_peaks": 2,
+            "base_state_beta": 0.5,
+            "n_permutations": 9,
+            "alpha": 0.05,
+            "min_lag": -2,
+            "max_lag": 2,
+        }
+    )
+
+    assert result["summary"]["time_start"] == "2000-01-01"
+    assert result["summary"]["time_end"] == "2000-12-31"
+    assert result["summary"]["n_time"] == 12
+    assert result["time_index"][0] == "2000-01-01"
+    assert result["time_index"][-1] == "2000-12-01"
+    assert len(result["driver_values"]) == 12
 
 
 def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypatch):
