@@ -224,7 +224,7 @@ test("sdc map shows a non-blocking cache warmup notice when catalog assets are w
   });
 
   await page.goto("/");
-  await page.getByTestId("workflow-tab-map").click();
+  await page.locator("#workflow_tab_map").click();
 
   await expect(page.locator("#map_cache_notice")).toContainText("warming in the background", {
     timeout: 20_000,
