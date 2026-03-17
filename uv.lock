@@ -1364,7 +1364,7 @@ wheels = [
 [[package]]
 name = "sdcpy-map"
 version = "0.1.0"
-source = { editable = "../sdcpy-map" }
+source = { git = "https://github.com/AlFontal/sdcpy-map.git?rev=5af375e2192da5da37e9ea42a95550a2d5dc9659#5af375e2192da5da37e9ea42a95550a2d5dc9659" }
 dependencies = [
     { name = "geopandas" },
     { name = "h5netcdf" },
@@ -1378,21 +1378,6 @@ dependencies = [
     { name = "xarray", version = "2025.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "xarray", version = "2026.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "geopandas", specifier = ">=0.13.0" },
-    { name = "h5netcdf", specifier = ">=1.0.0" },
-    { name = "h5py", specifier = ">=3.10.0" },
-    { name = "matplotlib", specifier = ">=3.7.1" },
-    { name = "numpy", specifier = ">=1.24.3" },
-    { name = "pandas", specifier = ">=2.0.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "sdcpy", specifier = ">=0.7.0" },
-    { name = "xarray", specifier = ">=2023.0.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "sdcpy-studio"
@@ -1438,7 +1423,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "sdcpy", specifier = ">=0.7.1" },
-    { name = "sdcpy-map", editable = "../sdcpy-map" },
+    { name = "sdcpy-map", git = "https://github.com/AlFontal/sdcpy-map.git?rev=5af375e2192da5da37e9ea42a95550a2d5dc9659" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
 provides-extras = ["dev"]
