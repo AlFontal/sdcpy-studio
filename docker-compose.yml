@@ -35,5 +35,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+  dozzle:
+    image: amir20/dozzle:v8.14.6
+    profiles:
+      - ops
+    ports:
+      - "8051:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   sdcpy_map_cache:

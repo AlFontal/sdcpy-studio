@@ -122,6 +122,31 @@ docker compose pull
 docker compose up -d
 ```
 
+### Log UI
+The same `ops` profile also starts `Dozzle`, a lightweight web UI for Docker logs.
+
+Start it with:
+```bash
+docker compose --profile ops up -d
+```
+
+Then open:
+```text
+http://YOUR_SERVER:8051
+```
+
+That lets you:
+- browse logs for `sdcpy-studio`, `watchtower`, and the rest of the stack
+- stream logs live
+- search and filter without shelling into the server
+
+CLI fallback:
+```bash
+docker compose logs -f
+docker compose logs -f sdcpy-studio
+docker compose logs --since=30m sdcpy-studio
+```
+
 ### Stop / reset
 ```bash
 docker compose down
