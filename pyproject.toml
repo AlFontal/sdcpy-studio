@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
   "sdcpy>=0.7.1",
-  "sdcpy-map @ git+https://github.com/AlFontal/sdcpy-map.git@5af375e2192da5da37e9ea42a95550a2d5dc9659",
+  "sdcpy-map @ git+https://github.com/AlFontal/sdcpy-map.git@main",
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
   "jinja2>=3.1.0",

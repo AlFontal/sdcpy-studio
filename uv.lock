@@ -1364,7 +1364,7 @@ wheels = [
 [[package]]
 name = "sdcpy-map"
 version = "0.1.0"
-source = { git = "https://github.com/AlFontal/sdcpy-map.git?rev=5af375e2192da5da37e9ea42a95550a2d5dc9659#5af375e2192da5da37e9ea42a95550a2d5dc9659" }
+source = { git = "https://github.com/AlFontal/sdcpy-map.git?rev=main#2a2e8e707dd31df78fc641da4bba5bfd1fc72806" }
 dependencies = [
     { name = "geopandas" },
     { name = "h5netcdf" },
@@ -1423,7 +1423,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "sdcpy", specifier = ">=0.7.1" },
-    { name = "sdcpy-map", git = "https://github.com/AlFontal/sdcpy-map.git?rev=5af375e2192da5da37e9ea42a95550a2d5dc9659" },
+    { name = "sdcpy-map", git = "https://github.com/AlFontal/sdcpy-map.git?rev=main" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
 ]
 provides-extras = ["dev"]
