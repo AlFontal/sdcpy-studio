@@ -1,6 +1,8 @@
 services:
   sdcpy-studio:
     image: ghcr.io/alfontal/sdcpy-studio:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
     ports:
       - "8050:8000"
     environment:
@@ -20,6 +22,18 @@ services:
       SDCPY_STUDIO_SDCPY_MAP_DATA_DIR: "/root/.cache/sdcpy-studio/sdcpy-map"
     volumes:
       - sdcpy_map_cache:/root/.cache/sdcpy-studio/sdcpy-map
+
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    profiles:
+      - ops
+    command:
+      - --label-enable
+      - --cleanup
+      - --interval
+      - "300"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   sdcpy_map_cache:

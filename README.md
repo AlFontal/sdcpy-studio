@@ -104,6 +104,24 @@ If you want a deterministic admin/init step before first use:
 docker compose --profile tools run --rm cache-map
 ```
 
+### Automatic image updates
+If you want the server to keep tracking `ghcr.io/alfontal/sdcpy-studio:latest` automatically, enable the optional `watchtower` profile:
+```bash
+docker compose --profile ops up -d
+```
+
+That will:
+- poll GHCR every 5 minutes
+- pull a newer `latest` image when available
+- recreate the `sdcpy-studio` container automatically
+- remove old image layers after the update
+
+If you want manual control instead, keep `watchtower` disabled and run:
+```bash
+docker compose pull
+docker compose up -d
+```
+
 ### Stop / reset
 ```bash
 docker compose down
@@ -141,6 +159,19 @@ If you are co-developing `sdcpy-studio` with a sibling checkout of `sdcpy-map`, 
 - Vanilla JS + Plotly frontend
 - `sdcpy` and `sdcpy-map` computational engines
 - `uv` for dependency management
+
+## Frontend Assets
+Plotly is vendored into the image at [plotly-2.35.2.min.js](/Users/alejandro/projects/sdcpy-studio/sdcpy_studio/static/plotly-2.35.2.min.js) so deployments do not depend on external CDN access.
+
+To upgrade Plotly:
+```bash
+curl -L https://cdn.plot.ly/plotly-NEW_VERSION.min.js -o sdcpy_studio/static/plotly-NEW_VERSION.min.js
+```
+
+Then:
+- update the `<script>` tag in [index.html](/Users/alejandro/projects/sdcpy-studio/sdcpy_studio/templates/index.html)
+- remove the old vendored file if it is no longer needed
+- run the browser smoke tests again
 
 ## Development
 ```bash
