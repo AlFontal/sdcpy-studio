@@ -179,6 +179,20 @@ class InlineJobManager:
         return None
 
 
+class StaticMapCacheManager:
+    def __init__(self, snapshot_payload: dict):
+        self._snapshot_payload = snapshot_payload
+
+    def start(self):
+        return None
+
+    def stop(self):
+        return None
+
+    def snapshot(self):
+        return dict(self._snapshot_payload)
+
+
 def _series_payload(n: int = 80):
     x = np.linspace(0, 8 * np.pi, n)
     ts1 = np.sin(x)
@@ -285,6 +299,33 @@ def test_root_page_renders():
     response = client.get("/")
     assert response.status_code == 200
     assert "scale-dependent correlation" in response.text.lower()
+
+
+def test_health_exposes_map_cache_status():
+    app = create_app(
+        job_manager=InlineJobManager(),
+        map_cache_manager=StaticMapCacheManager(
+            {
+                "status": "warming",
+                "mode": "auto",
+                "cache_dir": "/tmp/map-cache",
+                "manifest_present": False,
+                "catalog_ready": False,
+                "coastline_ready": True,
+                "completed_at": None,
+                "detail": "warming",
+                "error": None,
+            }
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/v1/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["map_cache"]["status"] == "warming"
+    assert payload["map_cache"]["coastline_ready"] is True
 
 
 def test_load_oni_example_dataset():

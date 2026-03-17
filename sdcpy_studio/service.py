@@ -194,6 +194,21 @@ def _download_map_asset(download_if_missing, url: str, destination: Path) -> Pat
         return download_if_missing(url, destination)
 
 
+def _load_map_dataset_registry():
+    try:
+        from sdcpy_map.datasets import (
+            COASTLINE_URL,
+            DRIVER_DATASETS,
+            FIELD_DATASETS,
+            download_if_missing,
+        )
+    except ImportError as exc:
+        raise ValueError(
+            "SDC Map dependencies are unavailable in this environment. Install project dependencies with `uv sync`."
+        ) from exc
+    return COASTLINE_URL, DRIVER_DATASETS, FIELD_DATASETS, download_if_missing
+
+
 def _full_driver_config():
     from sdcpy_map import SDCMapConfig
 
@@ -1922,57 +1937,68 @@ def fetch_sdc_map_assets(
     progress_total: int = 1,
 ) -> dict[str, Path]:
     """Fetch map assets using collision-safe filenames and stable source URLs."""
-    try:
-        from sdcpy_map.datasets import (
-            COASTLINE_URL,
-            DRIVER_DATASETS,
-            FIELD_DATASETS,
-            download_if_missing,
-        )
-    except ImportError as exc:
-        raise ValueError(
-            "SDC Map dependencies are unavailable in this environment. Install project dependencies with `uv sync`."
-        ) from exc
-
-    if driver_key not in DRIVER_DATASETS:
-        supported = ", ".join(sorted(DRIVER_DATASETS))
-        raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
-    if field_key not in FIELD_DATASETS:
-        supported = ", ".join(sorted(FIELD_DATASETS))
-        raise ValueError(f"Unknown field dataset '{field_key}'. Supported: {supported}.")
-
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    driver_spec = DRIVER_DATASETS[driver_key]
-    field_spec = FIELD_DATASETS[field_key]
-
-    driver_url = _canonical_psl_download_url(driver_spec.url)
-    field_url = _canonical_psl_download_url(field_spec.url)
-    coastline_url = _canonical_psl_download_url(COASTLINE_URL)
-
-    def _resolve_asset(url: str, destination: Path) -> Path:
-        return _download_map_asset(download_if_missing, url, destination)
-
     out: dict[str, Path] = {}
     _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})")
-    out["driver"] = _resolve_asset(
-        driver_url,
-        data_dir / _map_asset_filename("driver", driver_key, driver_url),
+    out["driver"] = fetch_sdc_map_driver_asset(
+        data_dir,
+        driver_key,
     )
     _emit_progress(progress_hook, progress_start + 1, progress_total, f"Ensuring field dataset ({field_key})")
-    out["field"] = _resolve_asset(
-        field_url,
-        data_dir / _map_asset_filename("field", field_key, field_url),
+    out["field"] = fetch_sdc_map_field_asset(
+        data_dir,
+        field_key,
     )
     if include_coastline:
         _emit_progress(progress_hook, progress_start + 2, progress_total, "Ensuring coastline dataset")
-        out["coastline"] = _resolve_asset(
-            coastline_url,
-            data_dir / _map_asset_filename("coastline", "ne_110m", coastline_url),
-        )
+        out["coastline"] = fetch_sdc_map_coastline_asset(data_dir)
 
     return out
+
+
+def fetch_sdc_map_driver_asset(data_dir: Path | str, driver_key: str) -> Path:
+    coastline_url, driver_datasets, _field_datasets, download_if_missing = _load_map_dataset_registry()
+    _ = coastline_url
+    if driver_key not in driver_datasets:
+        supported = ", ".join(sorted(driver_datasets))
+        raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    driver_spec = driver_datasets[driver_key]
+    driver_url = _canonical_psl_download_url(driver_spec.url)
+    return _download_map_asset(
+        download_if_missing,
+        driver_url,
+        data_dir / _map_asset_filename("driver", driver_key, driver_url),
+    )
+
+
+def fetch_sdc_map_field_asset(data_dir: Path | str, field_key: str) -> Path:
+    coastline_url, _driver_datasets, field_datasets, download_if_missing = _load_map_dataset_registry()
+    _ = coastline_url
+    if field_key not in field_datasets:
+        supported = ", ".join(sorted(field_datasets))
+        raise ValueError(f"Unknown field dataset '{field_key}'. Supported: {supported}.")
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    field_spec = field_datasets[field_key]
+    field_url = _canonical_psl_download_url(field_spec.url)
+    return _download_map_asset(
+        download_if_missing,
+        field_url,
+        data_dir / _map_asset_filename("field", field_key, field_url),
+    )
+
+
+def fetch_sdc_map_coastline_asset(data_dir: Path | str) -> Path:
+    coastline_url, _driver_datasets, _field_datasets, download_if_missing = _load_map_dataset_registry()
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    source_url = _canonical_psl_download_url(coastline_url)
+    return _download_map_asset(
+        download_if_missing,
+        source_url,
+        data_dir / _map_asset_filename("coastline", "ne_110m", source_url),
+    )
 
 
 def _get_driver_data_coverage(driver_key: str, data_dir: Path | str | None = None) -> dict[str, object]:
@@ -1990,15 +2016,9 @@ def _get_driver_data_coverage(driver_key: str, data_dir: Path | str | None = Non
 
     if data_dir is None:
         data_dir = _resolve_map_cache_dir()
-
-    paths = fetch_sdc_map_assets(
-        data_dir=data_dir,
-        driver_key=driver_key,
-        field_key="ncep_air",
-        include_coastline=False,
-    )
+    driver_path = fetch_sdc_map_driver_asset(data_dir=data_dir, driver_key=driver_key)
     driver = load_driver_series(
-        paths["driver"],
+        driver_path,
         config=_full_driver_config(),
         driver_key=driver_key,
     )
@@ -2029,14 +2049,9 @@ def _get_field_data_coverage(field_key: str, data_dir: Path | str | None = None)
     if data_dir is None:
         data_dir = _resolve_map_cache_dir()
 
-    paths = fetch_sdc_map_assets(
-        data_dir=data_dir,
-        driver_key="pdo",
-        field_key=field_key,
-        include_coastline=False,
-    )
+    field_path = fetch_sdc_map_field_asset(data_dir=data_dir, field_key=field_key)
     mapped_field = load_field_anomaly_subset(
-        paths["field"],
+        field_path,
         config=_full_driver_config(),
         field_key=field_key,
     )
@@ -2128,26 +2143,19 @@ def get_sdc_map_driver_defaults(driver_key: str, window_years: int = 3) -> dict:
     """Return default driver coverage and a preview of detected events."""
     try:
         from sdcpy_map import load_driver_series
-        from sdcpy_map.datasets import DRIVER_DATASETS, download_if_missing
     except ImportError as exc:
         raise ValueError(
             "SDC Map dependencies are unavailable in this environment. Install project dependencies with `uv sync`."
         ) from exc
 
-    if driver_key not in DRIVER_DATASETS:
-        supported = ", ".join(sorted(DRIVER_DATASETS))
+    _coastline_url, driver_datasets, _field_datasets, _download_if_missing = _load_map_dataset_registry()
+    if driver_key not in driver_datasets:
+        supported = ", ".join(sorted(driver_datasets))
         raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
 
     data_dir = _resolve_map_cache_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
-
-    driver_spec = DRIVER_DATASETS[driver_key]
-    driver_url = _canonical_psl_download_url(driver_spec.url)
-    driver_path = _download_map_asset(
-        download_if_missing,
-        driver_url,
-        data_dir / _map_asset_filename("driver", driver_key, driver_url),
-    )
+    driver_path = fetch_sdc_map_driver_asset(data_dir=data_dir, driver_key=driver_key)
 
     full_driver = load_driver_series(
         driver_path,
@@ -2186,12 +2194,7 @@ def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[
         data_dir = _resolve_map_cache_dir()
 
     # Fetch the field dataset
-    paths = fetch_sdc_map_assets(
-        data_dir=data_dir,
-        driver_key="pdo",  # Dummy driver; only fetching field
-        field_key=field_key,
-        include_coastline=False,
-    )
+    field_path = fetch_sdc_map_field_asset(data_dir=data_dir, field_key=field_key)
 
     # Load field with completely unconstrained bounds
     config = SDCMapConfig(
@@ -2199,7 +2202,7 @@ def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[
         lon_min=-180, lon_max=180,
         lat_stride=1, lon_stride=1,
     )
-    mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=field_key)
+    mapped_field = load_field_anomaly_subset(field_path, config=config, field_key=field_key)
     lats, lons = grid_coordinates(mapped_field)
 
     # Compute actual data extent
@@ -2289,16 +2292,17 @@ def _resolve_map_paths_for_request(
             _MAP_DATA_PATH_CACHE[cache_key] = paths
         return paths
 
-    dummy_driver_key = request.driver_dataset if driver_catalog else "pdo"
-    dummy_field_key = request.field_dataset if field_catalog else "ncep_air"
-    return fetch_sdc_map_assets(
-        data_dir=data_dir,
-        driver_key=dummy_driver_key,
-        field_key=dummy_field_key,
-        progress_hook=progress_hook,
-        progress_start=progress_start,
-        progress_total=progress_total,
-    )
+    paths: dict[str, Path] = {
+        "coastline": fetch_sdc_map_coastline_asset(data_dir),
+    }
+    if driver_catalog:
+        _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({request.driver_dataset})")
+        paths["driver"] = fetch_sdc_map_driver_asset(data_dir, request.driver_dataset)
+    if field_catalog:
+        field_progress = progress_start + (1 if driver_catalog else 0)
+        _emit_progress(progress_hook, field_progress, progress_total, f"Ensuring field dataset ({request.field_dataset})")
+        paths["field"] = fetch_sdc_map_field_asset(data_dir, request.field_dataset)
+    return paths
 
 
 def _resolve_map_time_window(

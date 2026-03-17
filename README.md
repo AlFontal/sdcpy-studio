@@ -39,29 +39,81 @@ npm run dev:api
 
 Open: `http://127.0.0.1:8000`
 
-## Docker Compose Deployment
-`docker-compose.yml` is the easiest way to deploy and keep a persistent dataset cache.
+## Docker Deployment
+The default deployment path is now image-first: pull the published container and run it with a persistent cache volume.
 
-### Start / update
+### 1) Pull the image
 ```bash
-docker compose up -d --build
+docker pull ghcr.io/alfontal/sdcpy-studio:latest
+```
+
+### 2) Download the deployment compose file
+```bash
+curl -O https://raw.githubusercontent.com/AlFontal/sdcpy-studio/main/docker-compose.yml
+```
+
+### 3) Start the app
+```bash
+docker compose up -d
 ```
 
 Open: `http://127.0.0.1:8050`
 
-### Prewarm map datasets (recommended)
+### First-run cache warmup
+On first boot the container starts immediately and warms the bundled SDC Map catalog cache in the background.
+
+- `2-Way SDC` is available immediately.
+- Custom uploaded SDC Map inputs (`CSV` driver + custom `NetCDF` field) are available immediately.
+- Catalog-backed SDC Map datasets may be slower until the warmup completes.
+- The cache lives in the named volume `sdcpy_map_cache`.
+
+You can inspect the live warmup status at:
+```bash
+curl http://127.0.0.1:8050/health
+```
+
+The response keeps the normal liveness contract and adds `map_cache` metadata:
+```json
+{
+  "status": "ok",
+  "map_cache": {
+    "status": "warming"
+  }
+}
+```
+
+### Warmup controls
+Default Docker behavior is:
+```bash
+SDCPY_STUDIO_MAP_PREWARM_MODE=auto
+```
+
+Supported modes:
+- `auto`: warm the bundled catalog cache on startup if the cache volume is missing or stale.
+- `off`: disable startup warmup.
+- `force`: rewarm the bundled catalog cache on every startup.
+
+Example:
+```bash
+SDCPY_STUDIO_MAP_PREWARM_MODE=force docker compose up -d
+```
+
+### Optional manual prewarm
+If you want a deterministic admin/init step before first use:
 ```bash
 docker compose --profile tools run --rm cache-map
 ```
 
-### Stop
+### Stop / reset
 ```bash
 docker compose down
+docker compose down -v
 ```
 
-### Stop + remove cache volume
+### Local source-built Docker workflow
+For contributor workflows from a checkout:
 ```bash
-docker compose down -v
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 ## What You Can Do
@@ -96,6 +148,12 @@ uv sync --extra dev
 ruff check .
 uv run pytest -q
 npm run test:e2e:with-api
+```
+
+For local Docker development from source:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 ## CI and Merge Protection

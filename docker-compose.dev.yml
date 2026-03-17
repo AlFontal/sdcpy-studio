@@ -1,0 +1,12 @@
+services:
+  sdcpy-studio:
+    image: sdcpy-studio:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  cache-map:
+    image: sdcpy-studio:dev
+    build:
+      context: .
+      dockerfile: Dockerfile

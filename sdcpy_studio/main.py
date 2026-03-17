@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sdcpy_studio.jobs import JobManager
+from sdcpy_studio.map_cache import MapCacheWarmupManager
 from sdcpy_studio.schemas import (
     DatasetInspectResponse,
     JobProgressResponse,
@@ -22,13 +23,14 @@ from sdcpy_studio.schemas import (
     SDCJobFromDatasetRequest,
     SDCJobRequest,
     SDCMapDriverPreviewResponse,
-    SDCMapExploreResponse,
     SDCMapDriverUploadInspectResponse,
+    SDCMapExploreResponse,
     SDCMapFieldUploadInspectResponse,
     SDCMapJobRequest,
     SDCMapJobResultResponse,
 )
 from sdcpy_studio.service import (
+    _resolve_map_cache_dir,
     build_job_request_from_dataset,
     build_sdc_map_driver_preview,
     build_sdc_map_exploration,
@@ -63,15 +65,22 @@ def _job_status_payload(job) -> JobStatusResponse:
     )
 
 
-def create_app(job_manager: JobManager | None = None) -> FastAPI:
+def create_app(
+    job_manager: JobManager | None = None,
+    map_cache_manager: MapCacheWarmupManager | None = None,
+) -> FastAPI:
     """Create the FastAPI app instance."""
 
     manager = job_manager or JobManager(max_workers=int(os.getenv("SDCPY_STUDIO_MAX_WORKERS", "2")))
+    cache_manager = map_cache_manager or MapCacheWarmupManager(data_dir=_resolve_map_cache_dir())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.job_manager = manager
+        app.state.map_cache_manager = cache_manager
+        cache_manager.start()
         yield
+        cache_manager.stop()
         manager.shutdown()
 
     app = FastAPI(
@@ -81,6 +90,7 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.job_manager = manager
+    app.state.map_cache_manager = cache_manager
 
     templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -109,12 +119,12 @@ def create_app(job_manager: JobManager | None = None) -> FastAPI:
         return templates.TemplateResponse(request, "index.html", {"title": "SDCpy Studio"})
 
     @app.get("/api/v1/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        return {"status": "ok", "map_cache": app.state.map_cache_manager.snapshot()}
 
     @app.get("/health")
-    async def health_root() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health_root() -> dict[str, object]:
+        return {"status": "ok", "map_cache": app.state.map_cache_manager.snapshot()}
 
     @app.get("/api/v1/examples/synthetic")
     async def synthetic_example() -> dict[str, list[float]]:

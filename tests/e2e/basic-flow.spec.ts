@@ -201,6 +201,39 @@ test("oni sample can be loaded without uploading a file", async ({ page }) => {
   await expect(page.getByTestId("dataset-preview-details")).toHaveJSProperty("open", false);
 });
 
+test("sdc map shows a non-blocking cache warmup notice when catalog assets are warming", async ({ page }) => {
+  await page.route("**/api/v1/health", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ok",
+        map_cache: {
+          status: "warming",
+          mode: "auto",
+          cache_dir: "/tmp/sdcpy-map",
+          manifest_present: false,
+          catalog_ready: false,
+          coastline_ready: true,
+          completed_at: null,
+          detail: "warming",
+          error: null,
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByTestId("workflow-tab-map").click();
+
+  await expect(page.locator("#map_cache_notice")).toContainText("warming in the background", {
+    timeout: 20_000,
+  });
+  await expect(page.locator("#map_cache_notice")).toContainText(
+    "custom uploaded SDC Map datasets are available now"
+  );
+});
+
 test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async ({ page }) => {
   const driverCsvPath = path.resolve("tests/fixtures/map_custom_driver.csv");
   const fieldNcPath = path.resolve("tests/fixtures/map_custom_field.nc");

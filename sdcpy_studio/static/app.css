@@ -798,6 +798,29 @@ textarea {
   color: var(--warn-ink);
 }
 
+.map-cache-notice {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft-2);
+  color: var(--ink);
+  font-size: 0.79rem;
+  line-height: 1.45;
+}
+
+.map-cache-notice[data-status="warming"] {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+.map-cache-notice[data-status="error"] {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-soft-2));
+  color: var(--danger);
+}
+
 .map-docs {
   margin-top: 6px;
   border: 1px solid var(--line);

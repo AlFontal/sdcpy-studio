@@ -4,9 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
-    PATH="/app/.venv/bin:$PATH"
-
-ARG INSTALL_MAP_DEPS=1
+    PATH="/app/.venv/bin:$PATH" \
+    SDCPY_STUDIO_MAP_PREWARM_MODE=auto \
+    SDCPY_STUDIO_SDCPY_MAP_DATA_DIR=/root/.cache/sdcpy-studio/sdcpy-map
 
 WORKDIR /app
 

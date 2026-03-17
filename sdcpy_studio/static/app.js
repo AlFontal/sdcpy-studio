@@ -94,6 +94,7 @@ const mapClearBoundsButton = document.getElementById("map_clear_bounds");
 const mapLoadButton = document.getElementById("map_load");
 const mapRunButton = document.getElementById("map_run");
 const mapStatusText = document.getElementById("map_status");
+const mapCacheNotice = document.getElementById("map_cache_notice");
 const mapBoundsNotice = document.getElementById("map_bounds_notice");
 const mapProgressLabel = document.getElementById("map_progress_label");
 const mapProgressValue = document.getElementById("map_progress_value");
@@ -165,6 +166,7 @@ let mapDriverPreviewToken = 0;
 let mapDriverPreviewDebounceTimer = null;
 let mapFocusedDriverEventKey = "";
 let mapEventPreviewContextLabel = "current";
+let mapRuntimeStatusPoll = null;
 let heatmapStepManuallyOverridden = false;
 let latestValidatedSeriesLength = 0;
 let mapDatasetCatalog = null;
@@ -831,6 +833,53 @@ function setMapStatus(message, isError = false) {
   mapStatusText.classList.toggle("error", !!isError);
 }
 
+function renderMapCacheNotice(mapCache) {
+  if (!mapCacheNotice) {
+    return;
+  }
+  const status = String(mapCache?.status || "").toLowerCase();
+  if (status !== "warming" && status !== "error") {
+    mapCacheNotice.hidden = true;
+    mapCacheNotice.textContent = "";
+    mapCacheNotice.removeAttribute("data-status");
+    return;
+  }
+  if (status === "warming") {
+    mapCacheNotice.textContent =
+      "Map catalog cache is warming in the background. 2-Way SDC and custom uploaded SDC Map datasets are available now; catalog-backed SDC Map datasets may be slower until warmup finishes.";
+  } else {
+    const detail = String(mapCache?.error || mapCache?.detail || "").trim();
+    mapCacheNotice.textContent = detail
+      ? `Map catalog cache warmup failed. 2-Way SDC and custom uploaded SDC Map datasets remain available, but catalog-backed SDC Map datasets may be slower or fail until the cache is refreshed. ${detail}`
+      : "Map catalog cache warmup failed. 2-Way SDC and custom uploaded SDC Map datasets remain available, but catalog-backed SDC Map datasets may be slower or fail until the cache is refreshed.";
+  }
+  mapCacheNotice.hidden = false;
+  mapCacheNotice.dataset.status = status;
+}
+
+async function refreshRuntimeStatus() {
+  try {
+    const response = await fetch("/api/v1/health", { cache: "no-store" });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    renderMapCacheNotice(payload?.map_cache || null);
+  } catch (_error) {
+    // Keep the app usable if runtime status polling is unavailable.
+  }
+}
+
+function startRuntimeStatusPolling() {
+  void refreshRuntimeStatus();
+  if (mapRuntimeStatusPoll) {
+    clearInterval(mapRuntimeStatusPoll);
+  }
+  mapRuntimeStatusPoll = window.setInterval(() => {
+    void refreshRuntimeStatus();
+  }, 15000);
+}
+
 function setMapPhase(nextPhase) {
   mapPhase = nextPhase || "idle";
   if (mapPhase !== "explore") {
@@ -902,6 +951,7 @@ function setWorkflowTab(mode) {
     workflowTabMapButton.setAttribute("aria-selected", nextTab === "map" ? "true" : "false");
   }
   if (nextTab === "map" && window.Plotly?.Plots?.resize && mapEventPreviewChart) {
+    void refreshRuntimeStatus();
     window.requestAnimationFrame(() => {
       window.Plotly.Plots.resize(mapEventPreviewChart);
     });
@@ -6258,6 +6308,7 @@ setMapStatus("Load datasets to start exploration, then run SDC map.");
 syncMapSourceControls();
 updateMapBoundsNotice();
 attachHandlers();
+startRuntimeStatusPolling();
 
 void (async () => {
   await fetchMapCatalog();
