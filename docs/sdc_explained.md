@@ -1,695 +1,334 @@
-# SDC and SDC-map: detailed methodological explanation
+# Understanding SDC and SDC Map
 
-## Source and scope
+This guide explains the two analysis modes available in `sdcpy-studio`:
 
-This note was reconstructed from the slide deck **“SDC: A transient-analysis tool” by Xavier Rodó** and related slides on multiscale and spatiotemporal applications. It explains, in technical but readable terms, what the **Scale-Dependent Correlation (SDC)** algorithm does and how the **SDC-map** extends that logic to spatiotemporal fields.
+- `2-Way SDC`, for studying how two time series move together through time
+- `SDC Map`, for studying how a scalar driver is expressed across a gridded field
 
-Where the slides are schematic rather than fully formal, I make the inference explicit and keep the interpretation conservative.
+The goal is not to give implementation notes. The goal is to help you understand what the app is doing, what each parameter changes, and how to read the outputs with confidence.
 
----
+## Why this analysis exists
 
-## 1. Why SDC exists
+Many environmental, climatic, ecological, and health relationships are not stable over a full record.
 
-The main motivation behind SDC is that many climate, environmental, and epidemiological relationships are **not stationary**, **not continuous in time**, and often **not well captured by one global correlation coefficient**.
+A single correlation over the whole series can miss the real structure because:
 
-A standard Pearson correlation over a full time series can be misleading when:
+- the relationship may only appear during some periods
+- the response may be delayed
+- positive and negative events may behave differently
+- the coupling may depend on the time scale being examined
 
-- the relationship is present only during certain intervals,
-- the forcing is intermittent or threshold-like,
-- the response depends on the background state of the impacted system,
-- the lag between driver and response changes over time,
-- the signal is visible at some temporal scales but not at others.
+Scale-Dependent Correlation, or `SDC`, was designed for that kind of problem. Instead of asking only whether two variables are correlated overall, it asks:
 
-The slide deck states this very directly: climate forcing may be **discontinuous**, may act only under selected situations, and may only become visible when local variability conditions favor interaction. In other words, the problem is not just “is X correlated with Y?”, but rather:
+- when are they coupled?
+- at what time scale?
+- with what lag?
+- and, in the mapped workflow, where is the response strongest?
 
-- **when** are X and Y coupled?
-- **at what scale** is the coupling visible?
-- **with what lag** does the coupling appear?
-- **where** in space is the response expressed?
-- **during which types of events** does the coupling emerge?
+## The two workflows in the app
 
-SDC was designed to answer exactly that class of questions.
+### 2-Way SDC
 
----
+Use this when you have two time series and want to explore their local coupling through time.
 
-## 2. Conceptual summary in one paragraph
+Typical questions:
 
-**SDC is a local, scale-aware correlation framework**. Instead of correlating two full series once, it computes correlations on **moving windows of a chosen size** and, optionally, at **different time lags**. This reveals whether two signals are coupled only in some intervals, whether the coupling changes sign, and whether it depends on the timescale considered. The **SDC-map** extends this idea by taking one scalar time series, selecting its most relevant positive and negative events, and computing **lagged local correlation maps** against a gridded field, after filtering out a “base state”. The final product is a spatial map of where and when the field responds to the selected events.
+- Do these variables move together only during some intervals?
+- Does one tend to lead or lag the other?
+- Is the relationship stronger at short or long windows?
 
----
+### SDC Map
 
-## 3. What the basic SDC algorithm does
+Use this when you have:
 
-## 3.1 Core idea
+- one scalar driver series, such as an index or regional summary
+- one gridded field, such as temperature, precipitation, pressure, or another spatial variable
 
-Given two time series, say:
+Typical questions:
 
-- `x(t)`: a driver or candidate forcing series,
-- `y(t)`: a response or target series,
+- Where does the field respond to strong positive events in the driver?
+- Where does it respond to strong negative events?
+- Does the response happen before, near, or after the driver peak?
+- Is the lag structure spatially organized?
 
-SDC does not compute one single correlation for the whole record. Instead, it computes correlations between **subsegments** of the series.
+## How 2-Way SDC works
 
-That means the algorithm asks:
+The `2-Way SDC` workflow compares two series using moving windows.
 
-> If I only look at a segment of length `s`, are the two signals correlated there?
+### Step 1. Choose a window length
 
-Then it slides that segment across time, repeating the calculation. This produces a matrix or set of local correlation values.
+The window length defines the temporal scale of the analysis.
 
-This is why the method is called **scale-dependent**:
+Short windows emphasize brief, transient relationships.
+Longer windows emphasize more persistent organization.
 
-- the **scale** is the segment/window length `s`,
-- the result depends on that scale,
-- the analyst is expected to inspect several values of `s`.
+### Step 2. Slide the window through time
 
----
+For each valid position, the app extracts a short segment from each series and computes their local correlation.
 
-## 3.2 The problem it is trying to solve
+This means the result is not one number for the whole record. It is a time-localized view of where the two series are more strongly or weakly related.
 
-The deck gives an illustrative case: two series can have a clear transient interval of strong coupling, but the full-series correlation can still be low, around `0.3` to `0.4`. In such cases, the global coefficient hides the structure.
+### Step 3. Repeat across lags
 
-SDC recovers that structure by localizing the correlation in time.
+If lag scanning is enabled, the same local comparison is repeated with one series shifted forward or backward in time.
 
-So the goal is not just sensitivity, but **localization**:
-- localization in time,
-- localization in lag,
-- and, in the mapped version, localization in space.
+That helps answer whether the relationship is delayed, and whether the delay stays stable or changes through the record.
 
----
+### What you learn from the result
 
-## 3.3 Typical temporal SDC workflow
+The result helps you distinguish:
 
-A practical temporal SDC analysis usually works like this:
+- persistent vs intermittent coupling
+- short-lived bursts vs long-lived structure
+- lead-lag behavior
+- periods where the relationship changes sign
 
-### Step 1. Choose a window length `s`
-This is the analysis scale, also described in the slides as the segment length.
+## How SDC Map works
 
-Examples:
-- short windows for transient, rapid interactions,
-- longer windows for more persistent, lower-frequency coupling.
+`SDC Map` keeps the same local-correlation logic, but applies it to a scalar driver and a spatial field.
 
-The slides emphasize that one should usually inspect **several segment lengths**, because different structures become visible at different scales.
+The current workflow in the app is event-conditioned. That means the map is built around selected driver events instead of treating all dates equally.
 
-### Step 2. Extract paired local segments
-At each valid time index, the algorithm takes:
-- a window of length `s` from `x`,
-- a corresponding window of length `s` from `y`.
+### Step 1. Align the driver and the field in time
 
-If a lag is being considered, one of those windows is shifted relative to the other.
+The app first keeps only the dates that are compatible between the scalar driver and the field data.
 
-### Step 3. Compute the local correlation
-For each pair of local windows, compute a correlation coefficient, usually Pearson correlation.
+All later steps work on this aligned time axis.
 
-This produces a local measure of similarity:
-- positive if both vary together,
-- negative if one rises while the other falls,
-- near zero if no linear coupling is visible on that segment.
+### Step 2. Detect positive and negative events separately
 
-### Step 4. Repeat through time
-Slide the window through the record and repeat.
+The driver is searched for local extrema.
 
-### Step 5. Optionally repeat across lags
-To test delayed responses, repeat the calculation for different lags.
+The workflow then selects:
 
-### Step 6. Inspect the local correlation pattern
-The output is a time-localized, scale-specific representation of coupling, often visualized as an SDC plot.
+- the strongest `N+` positive events
+- the strongest `N-` negative events
 
----
+These are handled separately because positive and negative phases often have different spatial expressions.
 
-## 4. What an SDC plot shows
+### Step 3. Define a base state
 
-Although the slides are graphical, the interpretation is fairly clear.
+The method also needs a reference state that represents relatively quiet conditions.
 
-An SDC plot typically reveals:
+That base state is defined from the driver using the `beta` threshold. In simple terms:
 
-- **persistent coupling**: blocks or bands of repeated positive or negative correlation,
-- **transient coupling**: isolated patches,
-- **intermittent forcing**: repeated but discontinuous patches,
-- **different noise structures**: different textures or patterns depending on the autocorrelation structure of the signals,
-- **changing dominant periodicity**: the shape of the local correlation field differs depending on the underlying dynamics.
+- strong events are kept as events
+- moderate or transitional periods are excluded from the baseline
+- the quiet remainder is used as the base state
 
-The deck explicitly notes that SDC can distinguish:
-- different types of noise,
-- different types of couplings,
-- and especially temporary interactions and discontinuities.
+The field is then interpreted relative to that background state.
 
-That is important: SDC is not just descriptive. It is meant as a **pattern recognition tool** for dynamical relationships.
+### Step 4. Build event-centered windows
 
----
+For each selected event, the app builds a centered window with width `r_w`, shown in the interface as `Correlation width`.
 
-## 5. Why scale matters
+This window defines the local temporal neighborhood used for the analysis.
 
-One of the most important points in the presentation is that the answer depends on the scale `s`.
+### Step 5. Scan field responses across lags
 
-A relationship can be:
-- weak at short scales but clear at long scales,
-- absent at long scales but strong at short scales,
-- consistent across scales,
-- or only present within a narrow scale band.
+At each grid cell, the app compares the local driver event window with local field windows across the lag range you requested.
 
-This is why the method is often run in **multiscale mode**, for example with `s` varying from 5 to 100 days in the respiratory disease applications shown in the deck.
+This produces an event-local, lag-aware response estimate for each cell.
 
-This gives two benefits:
+### Step 6. Keep statistically supported responses
 
-1. It tests robustness.
-   If the coupling is real, it may persist across neighboring scales instead of appearing only at one arbitrary window size.
+The local correlations are filtered using the selected significance settings and permutation testing.
 
-2. It helps distinguish mechanisms.
-   Short-scale coupling may reflect immediate triggering or weather events.
-   Long-scale coupling may reflect seasonal organization, background state, or slowly evolving modes.
+This reduces the number of weak or unstable responses that would otherwise clutter the map.
 
-The slides on influenza and COVID-19 applications suggest exactly this logic: associations can be examined both at large scales and at smaller local scales, with attention to whether they reflect real structure or spurious seasonality.
+### Step 7. Average within each event class
 
----
+The selected positive events are summarized together, and the selected negative events are summarized together.
 
-## 6. How lags are handled in SDC
+That is why the app produces separate positive and negative outputs.
 
-SDC is especially useful when the effect of one process on another is delayed.
+## What the event preview means
 
-Rather than assuming a fixed lag over the entire record, the method evaluates local correlation at one or several candidate lags. That means the analyst can see:
+Before you run a map, the app shows a preview of the detected events on the driver series.
 
-- whether the lag changes over time,
-- whether stronger correlations tend to happen at short or long lags,
-- whether positive and negative phases behave differently.
+This preview helps you check whether the selected `N+`, `N-`, `beta`, and `r_w` values are sensible before you launch a more expensive run.
 
-The deck explicitly remarks in one example that **stronger correlations are associated with shorter lags in general**, but only during stages of high transmission. That is a very characteristic SDC finding: lag structure itself can be state dependent.
+The preview shows:
 
----
+- the driver series
+- selected positive peaks
+- selected negative troughs
+- the base-state threshold
+- the event windows implied by `r_w`
 
-## 7. What makes SDC different from ordinary rolling correlation
+Use it as a quality-control step. If the selected events do not match your scientific question, adjust the parameters before running the map.
 
-At first glance, SDC may sound like rolling correlation. But the intended use is more structured and more interpretive.
+## What the main SDC Map parameters mean
 
-SDC differs in emphasis because it is designed to study:
+### Positive events (`N+`)
 
-- **scale dependence** explicitly,
-- **lag structure** explicitly,
-- **transient couplings** rather than only smoothed tracking,
-- **pattern interpretation** across scales and lags,
-- and later, **event-conditioned spatial composites** in SDC-map.
+How many positive driver events are included in the positive-class analysis.
 
-So while rolling correlation is one computational building block, SDC is better understood as a **framework for local, multiscale, lagged coupling analysis**.
+### Negative events (`N-`)
 
----
+How many negative driver events are included in the negative-class analysis.
 
-## 8. A formalized version of temporal SDC
+### Base-state beta
 
-The slides do not present explicit equations, but the method can be described in operational terms.
+Controls how strict the baseline definition is.
 
-Let:
+Smaller values define a narrower quiet baseline.
+Larger values allow more dates into the base state.
 
-- `x_t`, `t = 1, ..., T`
-- `y_t`, `t = 1, ..., T`
+### Correlation width (`r_w`)
 
-Choose:
-- window length `s`,
-- lag `ℓ`.
+The width of each event-centered analysis window.
 
-For each admissible time index `τ`, define:
+Shorter widths focus on local, sharper responses.
+Longer widths allow broader event evolution to contribute.
 
-- `X(τ) = [x_τ, x_(τ+1), ..., x_(τ+s-1)]`
-- `Y(τ, ℓ) = [y_(τ+ℓ), y_(τ+ℓ+1), ..., y_(τ+ℓ+s-1)]`
+### Lag range
 
-Then compute:
+Defines how far before and after the driver event the field response is searched.
 
-- `r(τ, ℓ, s) = corr(X(τ), Y(τ, ℓ))`
+### Significance alpha and permutations
 
-This gives a local correlation value for:
-- time location `τ`,
-- lag `ℓ`,
-- scale `s`.
+Control the statistical filtering applied to local responses.
 
-Repeat across all valid `τ`, and possibly across multiple `ℓ` and `s`.
+More permutations generally provide a more stable null estimate but take longer.
 
-The output is then:
-- a vector of local correlations if lag and scale are fixed,
-- a matrix if time and lag are both scanned,
-- a family of plots if multiple scales are explored.
+## Reading the SDC Map outputs
 
-That is the temporal SDC core.
+The app gives you two complementary views:
 
----
+- a static `A/B/C/D` summary
+- a dynamic lag explorer
 
-## 9. How the presentation interprets SDC scientifically
+### Static map A. Correlation
 
-The deck uses several examples:
+This map shows the average maximum supported SDC correlation at each grid cell.
 
-- ENSO versus cholera,
-- ENSO versus other climatic indices,
-- influenza versus meteorological variables,
-- COVID-19 versus flu-like environmental organization,
-- drought and large-scale climate forcing.
+It answers:
 
-The scientific logic is consistent across them:
-1. global correlation may be modest,
-2. forcing may be intermittent,
-3. different events may have different expressions,
-4. local analysis can reveal which portions of the time series drive the apparent association.
+> Where is the local relationship strongest?
 
-This is especially useful in climate-health systems, where transmission is often threshold-dependent and modulated by host susceptibility, environment, and season.
+### Static map B. Position
 
----
+This map shows where, within the event-centered window, the strongest field response tends to occur relative to the driver event peak.
 
-## 10. From SDC to SDC-map
+It answers:
 
-The temporal SDC algorithm analyzes local correlation between two time series. The **SDC-map** extends this idea to a different data configuration:
+> Does the field respond earlier, near the peak, or later within the event window?
 
-- one **scalar time series**, for example Niño3.4 index or disease incidence,
-- one **spatiotemporal field**, for example sea level pressure, SST, temperature, or another gridded atmospheric/oceanic variable.
+### Static map C. Lag
 
-The purpose is to determine:
+This map shows the lag at which the strongest supported response is found.
 
-- **where** the field is significantly associated with selected events in the scalar series,
-- **at which lags** the association appears,
-- and how the response differs between positive and negative events.
+It answers:
 
-This is why the deck calls it the **spatiotemporal approach**.
+> How many time steps earlier or later does the response appear?
 
----
+### Static map D. Timing
 
-## 11. What SDC-map does in plain language
+This map combines the event-relative position and lag information into a single timing summary.
 
-SDC-map takes the logic of local correlation and makes it event-centered:
+It answers:
 
-1. identify the strongest positive and negative events in a reference scalar series,
-2. define a “base state” that represents normal or moderate conditions,
-3. remove that base state from the gridded field,
-4. compute local lagged correlations between each selected event and the field at each grid point,
-5. assess statistical significance,
-6. average over the selected events,
-7. create maps of the resulting correlation structure.
+> What is the overall timing of the response with respect to the driver event?
 
-The result is a spatial picture of where the atmosphere, ocean, climate, or another field responds to selected phases of the scalar driver.
+### Dynamic lag explorer
 
----
+The lag explorer shows the mapped response at one selected lag at a time.
 
-## 12. Inputs to SDC-map
+Use it when you want to see how the response pattern changes through lag space instead of looking only at the condensed summary layers.
 
-The slide deck is very clear about the required inputs.
+## Positive and negative maps should not be assumed to match
 
-### 12.1 Scalar time series
-A one-dimensional series such as:
-- a disease series,
-- Niño3.4,
-- SOI,
-- drought energy,
-- or another regional index.
+One of the main reasons the workflow separates `N+` and `N-` is that many systems are asymmetric.
 
-This scalar series is the event-defining series.
+That means:
 
-### 12.2 Spatiotemporal matrix
-A gridded variable indexed by space and time, such as:
-- sea level pressure,
-- SST,
-- 2 m temperature,
-- atmospheric fields,
-- or another climate variable.
+- positive events may produce strong, coherent maps
+- negative events may be weaker or shifted
+- the timing structure may differ between signs
 
-This is the field in which one wants to detect the spatial imprint of the scalar driver.
+This is expected and can be scientifically informative.
 
----
+## What custom uploads are for
 
-## 13. Parameters in SDC-map
+The app supports:
 
-The slides list three main parameters.
+- custom `CSV` driver uploads
+- custom `NetCDF` field uploads
 
-### 13.1 `N+` and `N-`
-Number of selected positive peaks and negative peaks from the scalar series.
+This lets you use the same event-conditioned map workflow on your own data rather than only on the bundled catalog datasets.
 
-These define how many strong positive and negative events are included in the analysis.
+The inspection step checks the uploaded files before the run:
 
-For example:
-- the strongest 3 warm events,
-- the strongest 3 cold events.
+- for drivers, it looks for a usable date column and numeric series
+- for fields, it checks time, latitude, longitude, and any extra selectable dimensions such as level
 
-### 13.2 `β` (base-state robustness parameter)
-This parameter is used to define how much of the scalar series around the event peaks is considered part of the event class versus the “base state”.
+## Practical advice before running a map
 
-The slides show:
-- red area: selected and ignored peaks,
-- grey area: moderate years,
-- white area: normal years (base state),
-- and a threshold involving `β · x0`.
+### Start simple
 
-Interpretation:
-- `x0` is a reference event magnitude or threshold,
-- `β` scales the robustness of the base state,
-- the purpose is to isolate a clean non-event baseline.
+Use modest values for:
 
-In practice, `β` controls how strictly one excludes transitional or moderate conditions from the baseline.
+- `N+`
+- `N-`
+- lag range
+- permutations
 
-### 13.3 `r_w` (correlation width)
-The width of the local correlation window.
+Then increase complexity once the event selection and spatial behavior look sensible.
 
-In the example slide:
-- `r_w = 25 months`.
+### Check the event preview first
 
-This is the temporal neighborhood used when computing local correlation around an event for a given lag.
+If the chosen peaks do not look right, the final map will not answer the question you care about.
 
----
+### Do not over-read empty maps
 
-## 14. Peak selection in SDC-map
+Sometimes a run completes but yields very few valid cells. That can happen if:
 
-The deck devotes multiple slides to peak selection, which shows how central it is.
+- the chosen parameters are too strict
+- the selected events do not produce a stable response
+- the field or time window is not suitable for the question
 
-### 14.1 Why peaks are selected
-The method is not interested in all times equally. It assumes that the forcing signal may be strongest during specific positive or negative episodes.
+### Use the class split as information
 
-For ENSO-type applications, for example:
-- positive peaks may correspond to El Niño years,
-- negative peaks to La Niña years.
+If the positive class is structured and the negative class is weak, that is already a result. It does not automatically mean the run failed.
 
-### 14.2 Positive and negative peaks are treated separately
-The algorithm selects:
-- the top `N+` positive peaks,
-- the top `N-` negative peaks.
+## What the method is best at
 
-This separation matters because the spatial response to positive and negative phases may not be symmetric.
+This workflow is most useful when you expect:
 
-### 14.3 Ignored peaks versus base state
-The slides distinguish:
-- selected peaks,
-- ignored peaks,
-- moderate years,
-- normal years.
+- intermittent coupling
+- event-driven responses
+- lagged teleconnections
+- sign asymmetry
+- scale dependence
 
-This suggests the following operational logic:
+It is less useful if your question can already be answered with one stable full-series correlation.
 
-- selected peaks are used to construct event correlations,
-- some other strong-ish peaks may be excluded if not part of the chosen set,
-- moderate years are not used as baseline,
-- only “normal years” form the base state.
+## What the app does not claim
 
-This is a very important methodological choice because it tries to prevent the baseline from being contaminated by weak-event years.
+The app helps you localize and summarize structured relationships. It does not by itself prove causality.
 
----
+The outputs should be interpreted together with:
 
-## 15. The base-state filtering step
+- domain knowledge
+- data quality checks
+- sensitivity analysis across parameter choices
+- and, where possible, external validation
 
-This is one of the defining steps of SDC-map.
+## A sensible user workflow
 
-The slides state:
+For most studies, a good order is:
 
-- the base state is filtered out from the spatiotemporal matrix,
-- correlations are then computed from the scalar series and the filtered matrix,
-- correlations are averaged over the selected positive or negative peaks.
+1. Explore the driver and target behavior in `2-Way SDC`.
+2. Move to `SDC Map` once you have a plausible event-based question.
+3. Check the event preview carefully.
+4. Run modest parameter settings first.
+5. Inspect both the static summary maps and the lag explorer.
+6. Compare positive and negative classes explicitly.
+7. Export the outputs you want to report.
 
-What does this mean conceptually?
+## In short
 
-It means that SDC-map is not merely correlating the raw field with the scalar index. It first removes the background condition associated with normal years. So the final signal is closer to:
+`2-Way SDC` tells you when two series are locally coupled.
 
-- anomaly relative to a baseline,
-- event-conditioned response,
-- local coupling after subtracting non-event structure.
-
-This makes the maps more interpretable because they aim to isolate the spatial fingerprint of the selected episodes.
-
----
-
-## 16. Correlation computation in SDC-map
-
-Once peaks are chosen and the base state is filtered out, the method computes correlation maps.
-
-The deck says these maps are computed for each:
-
-- peak,
-- grid point `(x0, y0)`,
-- time lag, for example from `-12` to `+12` months.
-
-So the loop structure is conceptually:
-
-1. choose event class: positive or negative,
-2. choose one selected peak,
-3. choose one lag,
-4. choose one grid point,
-5. extract local field values in the correlation window `r_w`,
-6. correlate those with the scalar series segment associated with the selected event,
-7. store the resulting coefficient,
-8. repeat over all grid points and lags,
-9. then average across peaks.
-
-The slides explicitly mention outputs related to:
-1. correlations,
-2. location of the peak,
-3. lag,
-4. “exact” location relative to the scalar series.
-
-That suggests the method keeps track not only of map values, but also of the event timing metadata.
-
----
-
-## 17. Significance testing in SDC-map
-
-The presentation includes a dedicated significance slide.
-
-### 17.1 Monte Carlo null distribution
-A large ensemble of permutations, around 10,000 in the slide example, is used to generate alternative time series and simulate the correlation probability density function.
-
-### 17.2 Tail-based significance
-Significant correlations are assumed in the positive or negative tails of the simulated distribution. The slide also mentions use of a t-test.
-
-The overall logic is:
-- estimate what correlation values would be expected under a null arrangement,
-- compare observed local correlations against that null,
-- retain only those unlikely under the null.
-
-This is especially important because local and lagged correlation analysis involves many comparisons and would otherwise be prone to false positives.
-
----
-
-## 18. Outputs of SDC-map
-
-The output is not just one map. It is a structured set of products.
-
-### 18.1 Correlation maps by lag
-For each lag, one can obtain a spatial map showing where the field is positively or negatively associated with the selected events.
-
-### 18.2 Separate maps for positive and negative event classes
-Positive peaks and negative peaks are analyzed separately.
-
-### 18.3 Peak-averaged maps
-After computing per-peak maps, the results are averaged across the `N+` or `N-` selected peaks.
-
-### 18.4 Event metadata
-The slides imply storage of:
-- correlation value,
-- peak identity,
-- lag,
-- exact temporal alignment relative to the scalar series.
-
-### 18.5 A dynamic picture of teleconnection structure
-By scanning lag, the user can infer the spatial evolution of the response through time.
-
-This is exactly how the deck uses the method to show evolving responses to El Niño and other large-scale forcings.
-
----
-
-## 19. What scientific questions SDC-map is designed for
-
-From the applications shown, SDC-map is suited for questions like:
-
-- Where does a climate mode imprint itself in atmospheric or surface fields?
-- How does the spatial response evolve before, during, and after peak events?
-- Are positive and negative phases spatially symmetric?
-- Are droughts becoming larger, more energetic, or structured differently?
-- Which regions act as hotspots or response corridors to large-scale forcing?
-- How do regional impacts emerge from global drivers?
-
-So SDC-map is not just a visualization method. It is a **diagnostic method for event-conditioned spatial teleconnections**.
-
----
-
-## 20. Relation between SDC and SDC-map
-
-The two methods are related, but not identical.
-
-### SDC
-- data type: two time series,
-- purpose: find local, transient, scale-dependent coupling,
-- output: local correlation pattern over time, lag, and scale.
-
-### SDC-map
-- data type: one scalar series plus one gridded field,
-- purpose: find where and when the field responds to selected events in the scalar series,
-- output: lagged spatial maps, often conditioned on positive and negative event classes.
-
-A useful way to think about them is:
-
-- **SDC** localizes coupling in time,
-- **SDC-map** localizes coupling in time and space.
-
----
-
-## 21. Why the method is powerful
-
-The slide deck strongly implies several methodological strengths.
-
-### 21.1 It handles nonstationarity
-Relationships can turn on and off. SDC is built for that.
-
-### 21.2 It handles delayed effects
-Lag scanning is built in.
-
-### 21.3 It handles scale dependence
-Different window sizes reveal different structures.
-
-### 21.4 It separates event phases
-Positive and negative peaks can have different signatures.
-
-### 21.5 It avoids overreliance on global averages
-A weak global correlation does not imply absence of dynamical coupling.
-
-### 21.6 It links pattern recognition to physically plausible mechanisms
-The deck explicitly frames SDC as a tool to help assess whether couplings are physically plausible.
-
----
-
-## 22. Main limitations and caveats
-
-The slides are mostly methodological and promotional, so they emphasize strengths. But the method also has real caveats.
-
-### 22.1 Parameter dependence
-Results depend on:
-- window length `s`,
-- lag range,
-- number of selected peaks `N+`, `N-`,
-- base-state parameter `β`,
-- correlation width `r_w`.
-
-Poor parameter choices may overstate or hide structure.
-
-### 22.2 Multiple comparisons
-Scanning many times, scales, lags, and grid cells increases false-positive risk. The Monte Carlo step helps, but correction and interpretation still require care.
-
-### 22.3 Correlation is not causation
-The method detects structured association, not causal proof.
-
-### 22.4 Autocorrelation and shared seasonality
-Many environmental and disease signals are strongly autocorrelated and seasonal. Apparent local coupling can still emerge from shared structure unless carefully controlled.
-
-### 22.5 Peak conditioning can be powerful but subjective
-Selecting only the strongest events may isolate the mechanism, but it can also make results sensitive to event definition.
-
-### 22.6 Interpretation requires domain knowledge
-The method can reveal patterns, but physically plausible interpretation still depends on the science of the system.
-
----
-
-## 23. How to explain SDC in one technical sentence
-
-A concise technical description would be:
-
-> SDC is a local, lagged, multiscale correlation framework that computes correlation on moving windows to detect transient and scale-specific coupling between time series.
-
-And for SDC-map:
-
-> SDC-map is the event-conditioned spatiotemporal extension of SDC that correlates a scalar index with a gridded field across space and lag, after selecting positive and negative peaks and filtering out a normal-state baseline.
-
----
-
-## 24. Minimal pseudo-workflow for implementation
-
-## 24.1 Temporal SDC pseudo-workflow
-
-1. Choose two aligned time series `x(t)` and `y(t)`.
-2. Select a window length `s`.
-3. Select lag range `L`.
-4. For each lag `ℓ in L`:
-   1. Slide a window of length `s` along the record.
-   2. Compute local correlation between the lagged windows.
-5. Store `r(time, lag, scale)`.
-6. Repeat for multiple `s`.
-7. Visualize and interpret transient patches, sign changes, and lag structure.
-
-## 24.2 SDC-map pseudo-workflow
-
-1. Choose a scalar series `x(t)` and a gridded field `F(x, y, t)`.
-2. Identify strongest positive peaks and strongest negative peaks in `x(t)`.
-3. Define moderate years and normal years using a thresholding rule involving `β`.
-4. Estimate the base-state field from normal years.
-5. Remove the base state from `F`.
-6. For each selected peak:
-   1. For each lag `ℓ`:
-      1. For each grid point `(x, y)`:
-         1. Extract a local field segment of width `r_w`.
-         2. Correlate with the scalar series segment aligned to the selected peak.
-7. Build null distributions via Monte Carlo permutations.
-8. Threshold by significance.
-9. Average across peaks within positive and negative classes.
-10. Produce lagged correlation maps.
-
----
-
-## 25. Practical interpretation guide
-
-When reading SDC results, I would interpret them as follows.
-
-### If a relationship appears only at one scale
-Treat cautiously. It may be real, but robustness is limited.
-
-### If a relationship appears across neighboring scales
-More convincing. That suggests a genuine scale band rather than an artifact of one window size.
-
-### If the same sign appears repeatedly during known events
-This is strong evidence of event-conditioned organization.
-
-### If positive and negative peaks yield different maps
-That implies asymmetry in the system response.
-
-### If correlations are strongest at short lags only in high-activity periods
-That suggests state-dependent sensitivity or threshold behavior.
-
-### If global correlation is weak but local patterns are strong
-That is exactly the kind of scenario SDC was designed to detect.
-
----
-
-## 26. A very short intuitive analogy
-
-A single full-series correlation is like averaging the sound of an entire song and asking whether two instruments are coordinated.
-
-SDC instead listens in short overlapping fragments:
-- sometimes the instruments are synchronized,
-- sometimes one leads the other,
-- sometimes one drops out,
-- and this depends on the part of the song.
-
-SDC-map adds the stage layout:
-- not only when the coordination happens,
-- but where in the orchestra it is expressed.
-
----
-
-## 27. Bottom line
-
-The slide deck presents SDC as a **transient-analysis tool** for systems in which couplings are intermittent, delayed, threshold-dependent, and scale-specific. The algorithm works by computing **local correlations on moving windows**, often across **multiple scales and lags**, to reveal hidden dynamical structure that global correlations miss.
-
-The **SDC-map** extends the same philosophy to spatial fields. It selects positive and negative events in a scalar driver, defines and filters out a normal baseline, computes **lagged local correlation maps** at each grid point, and uses Monte Carlo methods to identify significant spatial fingerprints of the selected events.
-
-In short:
-
-- **SDC** answers: *when, at what scale, and with what lag are two time series coupled?*
-- **SDC-map** answers: *where, when, and with what lag does a spatial field respond to selected events in a scalar series?*
-
----
-
-## 28. References explicitly mentioned in the deck
-
-The slides cite or mention:
-
-- Rodó (1997; 2001)
-- Rodríguez-Arias & Rodó (2004)
-- Rodó & Rodríguez-Arias (2005)
-- Rodó et al., PNAS (2002)
-- Rodó et al. (2024)
-- Fontal et al., Nature Computational Science (2021)
-
-These appear to represent the methodological development of SDC and examples of its applications across climate, drought, cholera, influenza, and COVID-related analyses.
-
----
-
-## 29. Suggested wording for reuse in documentation or a methods section
-
-You can reuse or adapt this paragraph:
-
-> Scale-Dependent Correlation (SDC) analysis is a local correlation framework designed to detect transient, lagged, and scale-specific coupling between nonstationary time series. Instead of computing a single correlation over an entire record, SDC evaluates correlation on moving windows of fixed length and, optionally, across multiple lags and temporal scales. This allows the identification of intermittent or threshold-dependent associations that would be diluted in full-series statistics. Its spatiotemporal extension, SDC-map, uses a scalar reference series together with a gridded field, selects strong positive and negative events in the scalar series, filters out a normal-state baseline, and computes lagged local correlation maps for each event and grid point. Significant responses are then identified through Monte Carlo testing and summarized as event-conditioned spatial fingerprints.
-
+`SDC Map` tells you where and when a field responds to selected driver events, with positive and negative phases treated separately and the response summarized both statically and by lag.
