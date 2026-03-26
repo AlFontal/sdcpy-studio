@@ -1364,7 +1364,7 @@ wheels = [
 [[package]]
 name = "sdcpy-map"
 version = "0.1.0"
-source = { git = "https://github.com/AlFontal/sdcpy-map.git?rev=main#2a2e8e707dd31df78fc641da4bba5bfd1fc72806" }
+source = { git = "https://github.com/AlFontal/sdcpy-map.git?rev=main#3feb2b331794b80bf621381a9c1328140b4ea194" }
 dependencies = [
     { name = "geopandas" },
     { name = "h5netcdf" },
