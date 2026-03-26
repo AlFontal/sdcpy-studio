@@ -36,7 +36,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install Python dependencies
-        run: uv sync --extra dev --no-sources
+        run: uv sync --extra dev --no-sources --upgrade-package sdcpy-map
 
       - name: Run API tests
         run: uv run pytest -q tests/test_api.py
