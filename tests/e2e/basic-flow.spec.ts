@@ -15,6 +15,45 @@ function buildDatasetCsv(n: number): string {
   return rows.join("\n");
 }
 
+async function emitPlotlyClick(
+  page: import("@playwright/test").Page,
+  plotSelector: string,
+  traceName: string,
+  pointIndex = 0
+): Promise<void> {
+  await page.evaluate(
+    ({ plotSelector: selector, traceName: targetTrace, pointIndex: targetPointIndex }) => {
+      const gd = document.querySelector(selector) as any;
+      if (!gd?.data?.length || typeof gd.emit !== "function") {
+        throw new Error(`Plotly graph not ready for ${selector}`);
+      }
+      const traceIndex = gd.data.findIndex((trace: { name?: string }) => String(trace?.name ?? "") === targetTrace);
+      if (traceIndex < 0) {
+        throw new Error(`Trace '${targetTrace}' not found`);
+      }
+      const trace = gd.data[traceIndex];
+      const fullTrace = gd._fullData?.[traceIndex] ?? trace;
+      const x = Array.isArray(trace.x) ? trace.x[targetPointIndex] : undefined;
+      const y = Array.isArray(trace.y) ? trace.y[targetPointIndex] : undefined;
+      const customdata = Array.isArray(trace.customdata) ? trace.customdata[targetPointIndex] : undefined;
+      gd.emit("plotly_click", {
+        points: [
+          {
+            data: trace,
+            fullData: fullTrace,
+            x,
+            y,
+            customdata,
+            pointIndex: targetPointIndex,
+            curveNumber: traceIndex,
+          },
+        ],
+      });
+    },
+    { plotSelector, traceName, pointIndex }
+  );
+}
+
 test("dataset workflow runs analysis and renders outputs", async ({ page }, testInfo) => {
   const csvPath = testInfo.outputPath("dataset.csv");
   writeFileSync(csvPath, buildDatasetCsv(72), "utf8");
@@ -253,6 +292,7 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
         date: `2000-${String(index + 1).padStart(2, "0")}-01`,
         value: sign === "positive" ? 1.2 - index * 0.1 : -1.1 + index * 0.05,
         sign,
+        source: "auto",
       }));
     await route.fulfill({
       status: 200,
@@ -278,6 +318,7 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
             base_state_threshold: 0.55,
             base_state_count: 18,
             warnings: [],
+            selection_mode: "auto",
           },
           time_index: ["1998-01-01", "1998-02-01", "1998-03-01"],
           driver_values: [0.1, 0.2, -0.1],
@@ -330,18 +371,19 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
           },
           event_catalog: {
             selected_positive: [
-              { index: 0, date: "1999-03-01", value: 1.14, sign: "positive" },
-              { index: 1, date: "2000-08-01", value: 1.22, sign: "positive" },
+              { index: 0, date: "1999-03-01", value: 1.14, sign: "positive", source: "auto" },
+              { index: 1, date: "2000-08-01", value: 1.22, sign: "positive", source: "auto" },
             ],
             selected_negative: [
-              { index: 0, date: "1998-11-01", value: -1.01, sign: "negative" },
-              { index: 1, date: "2001-02-01", value: -0.97, sign: "negative" },
+              { index: 0, date: "1998-11-01", value: -1.01, sign: "negative", source: "auto" },
+              { index: 1, date: "2001-02-01", value: -0.97, sign: "negative", source: "auto" },
             ],
             ignored_positive: [],
             ignored_negative: [],
             base_state_threshold: 0.55,
             base_state_count: 18,
             warnings: [],
+            selection_mode: "auto",
           },
           time_index: ["1998-01-01", "1998-02-01"],
           driver_values: [0.1, 0.2],
@@ -672,7 +714,7 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
           runtime_seconds: 1.2,
           figure_png_base64:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-          download_formats: ["png", "nc"],
+          download_formats: ["png", "pdf", "nc"],
           layer_maps: {
             lat: [-20, 0, 20],
             lon: [-160, -140, -120],
@@ -734,6 +776,11 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
   await expect(page.getByTestId("map-field-variable-select")).toHaveValue("sst_anom_custom");
 
   await expect(page.locator("#map_time_start")).toHaveValue(/\d{4}-\d{2}-\d{2}/);
+  await expect(page.getByTestId("map-preview-controls")).toBeVisible();
+  await expect(page.getByTestId("map-preview-instructions")).toContainText(
+    "Click the chart to add events or remove selected ones."
+  );
+  await expect(page.getByTestId("map-clear-events-button")).toBeVisible();
   await expect(page.locator("#map_event_preview")).toContainText("Positive events (N+)");
   await expect(page.getByTestId("map-event-preview-chart")).toBeVisible();
   const previewChartMeta = await page.evaluate(() => {
@@ -741,32 +788,33 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
       "#map_event_preview_chart.js-plotly-plot, #map_event_preview_chart .js-plotly-plot"
     ) as
       | ({
-          data?: Array<{ name?: string; hovertemplate?: string; hoverinfo?: string; showlegend?: boolean }>;
-          layout?: { shapes?: Array<unknown> };
+          data?: Array<{ name?: string; hovertemplate?: string; hoverinfo?: string; showlegend?: boolean; mode?: string }>;
+          layout?: { shapes?: Array<unknown>; hovermode?: string; showlegend?: boolean };
         } & Element)
       | null;
     if (!gd || !Array.isArray(gd.data)) {
-      return { hasPlot: false, shapeCount: 0, traceNames: [], markerHoverInfo: "", thresholdLegendCount: 0 };
+      return { hasPlot: false, shapeCount: 0, traceNames: [], driverHover: "", driverMode: "", hovermode: "" };
     }
-    const selectedPositiveTrace = gd.data.find((trace) => trace.name === "Selected positive");
+    const driverTrace = gd.data.find((trace) => trace.name === "Driver");
     const traceNames = gd.data.map((trace) => String(trace.name ?? ""));
-    const thresholdLegendCount = gd.data.filter(
-      (trace) => trace.name === "Base-state threshold" && trace.showlegend !== false
-    ).length;
     return {
       hasPlot: true,
       shapeCount: Array.isArray(gd.layout?.shapes) ? gd.layout.shapes.length : 0,
       traceNames,
-      markerHoverInfo: String(selectedPositiveTrace?.hoverinfo ?? ""),
-      thresholdLegendCount,
+      driverHover: String(driverTrace?.hovertemplate ?? ""),
+      driverMode: String(driverTrace?.mode ?? ""),
+      hovermode: String(gd.layout?.hovermode ?? ""),
     };
   });
   expect(previewChartMeta.hasPlot).toBeTruthy();
   expect(previewChartMeta.shapeCount).toBeGreaterThan(0);
-  expect(previewChartMeta.traceNames).not.toContain("Ignored positive");
-  expect(previewChartMeta.traceNames).not.toContain("Ignored negative");
-  expect(previewChartMeta.thresholdLegendCount).toBe(1);
-  expect(previewChartMeta.markerHoverInfo).toBe("skip");
+  expect(previewChartMeta.traceNames).toContain("Driver");
+  expect(previewChartMeta.traceNames).toContain("Auto positive");
+  expect(previewChartMeta.traceNames).toContain("Auto negative");
+  expect(previewChartMeta.driverHover).toContain("Value=");
+  expect(previewChartMeta.driverHover).not.toContain("Driver");
+  expect(previewChartMeta.driverMode).toBe("lines");
+  expect(previewChartMeta.hovermode).toBe("closest");
   await page.locator("#map_n_positive_peaks").fill("2");
   await expect.poll(() => previewRequest?.n_positive_peaks).toBe(2);
   await expect(page.locator("#map_event_preview")).toContainText("2000-02-01");
@@ -891,6 +939,361 @@ test("custom map upload errors are cleared after a valid re-upload", async ({ pa
   await expect(page.getByTestId("map-field-upload-status")).toContainText("Ready:", { timeout: 20_000 });
   await expect(page.locator("#map_status")).not.toContainText("Could not open NetCDF file");
   await expect(page.locator("#map_status")).toContainText("Load datasets to start exploration");
+});
+
+test("manual map event curation persists through load and run, and reseeds when N changes", async ({ page }) => {
+  let previewRequest: Record<string, unknown> | null = null;
+  let exploreRequest: Record<string, unknown> | null = null;
+  let mapSubmitRequest: Record<string, unknown> | null = null;
+
+  const timeIndex = ["2000-01-01", "2000-02-01", "2000-03-01", "2000-04-01", "2000-05-01", "2000-06-01"];
+  const driverValues = [0.1, 1.2, 0.2, -1.1, 0.3, 0.8];
+  const valueByDate = Object.fromEntries(timeIndex.map((date, index) => [date, driverValues[index]]));
+  const indexByDate = Object.fromEntries(timeIndex.map((date, index) => [date, index]));
+  const autoPositive = new Set(["2000-02-01"]);
+  const autoNegative = new Set(["2000-04-01"]);
+
+  const buildCatalog = (manualSelection: Record<string, unknown> | null | undefined) => {
+    const allPositive = ["2000-02-01", "2000-06-01"];
+    const allNegative = ["2000-04-01"];
+    const selectedPositiveDates = Array.isArray(manualSelection?.selected_positive_dates)
+      ? [...new Set((manualSelection?.selected_positive_dates as string[]).map(String))].sort()
+      : ["2000-02-01"];
+    const selectedNegativeDates = Array.isArray(manualSelection?.selected_negative_dates)
+      ? [...new Set((manualSelection?.selected_negative_dates as string[]).map(String))].sort()
+      : ["2000-04-01"];
+    const toItem = (date: string, sign: "positive" | "negative") => ({
+      date,
+      index: indexByDate[date],
+      value: valueByDate[date],
+      sign,
+      source:
+        (sign === "positive" ? autoPositive : autoNegative).has(date) ? "auto" : "manual",
+    });
+    return {
+      selected_positive: selectedPositiveDates.map((date) => toItem(date, "positive")),
+      selected_negative: selectedNegativeDates.map((date) => toItem(date, "negative")),
+      ignored_positive: allPositive
+        .filter((date) => !selectedPositiveDates.includes(date))
+        .map((date) => ({ ...toItem(date, "positive"), source: "auto" })),
+      ignored_negative: allNegative
+        .filter((date) => !selectedNegativeDates.includes(date))
+        .map((date) => ({ ...toItem(date, "negative"), source: "auto" })),
+      base_state_threshold: 0.4,
+      base_state_count: 3,
+      warnings: [],
+      selection_mode: manualSelection ? "manual" : "auto",
+    };
+  };
+
+  await page.route("**/api/v1/sdc-map/driver/preview", async (route) => {
+    previewRequest = route.request().postDataJSON() as Record<string, unknown>;
+    const manualSelection = (previewRequest?.manual_event_selection as Record<string, unknown> | null) ?? null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            time_start: "2000-01-01",
+            time_end: "2000-06-01",
+            correlation_width: Number(previewRequest?.correlation_width ?? 12),
+            n_positive_peaks: Number(previewRequest?.n_positive_peaks ?? 1),
+            n_negative_peaks: Number(previewRequest?.n_negative_peaks ?? 1),
+            base_state_beta: 0.5,
+            n_points: timeIndex.length,
+          },
+          event_catalog: buildCatalog(manualSelection),
+          time_index: timeIndex,
+          driver_values: driverValues,
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/sdc-map/explore", async (route) => {
+    exploreRequest = route.request().postDataJSON() as Record<string, unknown>;
+    const manualSelection = (exploreRequest?.manual_event_selection as Record<string, unknown> | null) ?? null;
+    const catalog = buildCatalog(manualSelection);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            field_dataset: "ncep_air",
+            driver_source_type: "catalog",
+            field_source_type: "catalog",
+            field_variable: "air",
+            time_start: "2000-01-01",
+            time_end: "2000-06-01",
+            correlation_width: 12,
+            n_positive_peaks: 1,
+            n_negative_peaks: 1,
+            base_state_beta: 0.5,
+            n_time: timeIndex.length,
+            n_lat: 2,
+            n_lon: 2,
+            valid_values: 24,
+            valid_rate: 1,
+            first_valid_index: [0, 0, 0],
+            field_lat_min: -10,
+            field_lat_max: 10,
+            field_lon_min: -150,
+            field_lon_max: -130,
+            field_value_min: -1,
+            field_value_max: 1,
+            used_lat_min: -10,
+            used_lat_max: 10,
+            used_lon_min: -150,
+            used_lon_max: -130,
+            full_bounds_selected: true,
+            selected_positive_events: catalog.selected_positive.length,
+            selected_negative_events: catalog.selected_negative.length,
+            base_state_count: 3,
+            base_state_threshold: 0.4,
+          },
+          event_catalog: catalog,
+          time_index: timeIndex,
+          driver_values: driverValues,
+          lat: [-10, 10],
+          lon: [-150, -130],
+          field_frames: [
+            [
+              [0.1, 0.2],
+              [0.2, 0.3],
+            ],
+          ],
+          coastline: { lat: [null], lon: [null] },
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    mapSubmitRequest = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ job_id: "manual-map-job", status: "queued", message: "ok" }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/manual-map-job", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "manual-map-job",
+        status: "succeeded",
+        created_at: "2026-02-23T00:00:00Z",
+        started_at: "2026-02-23T00:00:00Z",
+        completed_at: "2026-02-23T00:00:01Z",
+        progress: { current: 1, total: 1, description: "Completed" },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/manual-map-job/result", async (route) => {
+    const manualSelection = (mapSubmitRequest?.manual_event_selection as Record<string, unknown> | null) ?? null;
+    const catalog = buildCatalog(manualSelection);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "manual-map-job",
+        status: "succeeded",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            field_dataset: "ncep_air",
+            driver_source_type: "catalog",
+            field_source_type: "catalog",
+            field_variable: "air",
+            time_start: "2000-01-01",
+            time_end: "2000-06-01",
+            correlation_width: 12,
+            n_positive_peaks: 1,
+            n_negative_peaks: 1,
+            base_state_beta: 0.5,
+            n_permutations: 9,
+            alpha: 0.05,
+            min_lag: -1,
+            max_lag: 1,
+            lat_min: -10,
+            lat_max: 10,
+            lon_min: -150,
+            lon_max: -130,
+            lat_stride: 1,
+            lon_stride: 1,
+            n_time: timeIndex.length,
+            n_lat: 2,
+            n_lon: 2,
+            total_cells: 4,
+            valid_cells: 4,
+            valid_cell_rate: 1,
+            field_lat_min: -10,
+            field_lat_max: 10,
+            field_lon_min: -150,
+            field_lon_max: -130,
+            mean_abs_corr: 0.4,
+            full_bounds_selected: true,
+            selected_positive_events: catalog.selected_positive.length,
+            selected_negative_events: catalog.selected_negative.length,
+            base_state_count: 3,
+            base_state_threshold: 0.4,
+            time_step_unit_singular: "month",
+            time_step_unit_plural: "months",
+          },
+          event_catalog: catalog,
+          class_results: {
+            positive: {
+              summary: { selected_event_count: catalog.selected_positive.length, valid_cells: 4, lag_valid_cells: [4] },
+              layer_maps: { lat: [-10, 10], lon: [-150, -130], coastline: { lat: [null], lon: [null] }, layers: [] },
+              lag_maps: {
+                lat: [-10, 10],
+                lon: [-150, -130],
+                lags: [0],
+                coastline: { lat: [null], lon: [null] },
+                corr_by_lag: [[[0.2, 0.3], [0.4, 0.5]]],
+                event_count_by_lag: [[[1, 1], [1, 1]]],
+              },
+              empty_reason: null,
+            },
+            negative: {
+              summary: { selected_event_count: catalog.selected_negative.length, valid_cells: 4, lag_valid_cells: [4] },
+              layer_maps: { lat: [-10, 10], lon: [-150, -130], coastline: { lat: [null], lon: [null] }, layers: [] },
+              lag_maps: {
+                lat: [-10, 10],
+                lon: [-150, -130],
+                lags: [0],
+                coastline: { lat: [null], lon: [null] },
+                corr_by_lag: [[[-0.2, -0.3], [-0.4, -0.5]]],
+                event_count_by_lag: [[[1, 1], [1, 1]]],
+              },
+              empty_reason: null,
+            },
+          },
+          notes: [],
+          runtime_seconds: 0.7,
+          figure_png_base64:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
+          download_formats: ["png", "pdf", "nc"],
+          layer_maps: { lat: [-10, 10], lon: [-150, -130], coastline: { lat: [null], lon: [null] }, layers: [] },
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /SDC Map/i }).click();
+  await expect.poll(() => previewRequest).not.toBeNull();
+  await expect(page.locator("#map_event_preview")).toContainText("Selection mode:");
+  await expect(page.locator("#map_event_preview")).toContainText("2000-02-01");
+
+  await emitPlotlyClick(page, "#map_event_preview_chart", "Ignored positive", 0);
+  await expect
+    .poll(() => (previewRequest?.manual_event_selection as any)?.selected_positive_dates ?? [])
+    .toEqual(["2000-02-01", "2000-06-01"]);
+  await expect(page.locator("#map_event_preview")).toContainText("manual");
+
+  await emitPlotlyClick(page, "#map_event_preview_chart", "Auto positive", 0);
+  await expect
+    .poll(() => (previewRequest?.manual_event_selection as any)?.selected_positive_dates ?? [])
+    .toEqual(["2000-06-01"]);
+
+  await emitPlotlyClick(page, "#map_event_preview_chart", "Driver", 4);
+  await expect
+    .poll(() => (previewRequest?.manual_event_selection as any)?.selected_positive_dates ?? [])
+    .toEqual(["2000-05-01", "2000-06-01"]);
+
+  await page.locator("#map_load").click();
+  await expect(page.locator("#map_status")).toContainText("Exploration ready", { timeout: 15_000 });
+  expect((exploreRequest?.manual_event_selection as any)?.selected_positive_dates).toEqual([
+    "2000-05-01",
+    "2000-06-01",
+  ]);
+
+  await page.locator("#map_run").click();
+  await expect(page.locator("#map_status")).toContainText("SDC map ready", { timeout: 15_000 });
+  expect((mapSubmitRequest?.manual_event_selection as any)?.selected_positive_dates).toEqual([
+    "2000-05-01",
+    "2000-06-01",
+  ]);
+  await expect(page.locator("#map_download_pdf")).toBeEnabled();
+
+  await page.getByTestId("map-clear-events-button").click();
+  await expect.poll(() => previewRequest?.manual_event_selection ?? null).toBeNull();
+  await expect(page.locator("#map_event_preview")).toContainText("auto");
+
+  await page.locator("#map_n_positive_peaks").fill("2");
+  await expect.poll(() => previewRequest?.manual_event_selection ?? null).toBeNull();
+  await expect(page.locator("#map_event_preview")).toContainText("auto");
+});
+
+test("map preview stays usable when both event seed counts are zero", async ({ page }) => {
+  let previewRequest: Record<string, unknown> | null = null;
+
+  await page.route("**/api/v1/sdc-map/driver/preview", async (route) => {
+    previewRequest = JSON.parse(route.request().postData() || "{}");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            field_dataset: "ncep_air",
+            time_start: "2000-01-01",
+            time_end: "2000-12-01",
+            correlation_width: 12,
+            n_positive_peaks: Number(previewRequest?.n_positive_peaks ?? 0),
+            n_negative_peaks: Number(previewRequest?.n_negative_peaks ?? 0),
+            base_state_beta: 0.5,
+            n_points: 6,
+          },
+          event_catalog: {
+            selected_positive: [],
+            selected_negative: [],
+            ignored_positive: [],
+            ignored_negative: [],
+            base_state_threshold: 0.45,
+            base_state_count: 6,
+            warnings: [],
+            selection_mode: "auto",
+          },
+          time_index: [
+            "2000-01-01",
+            "2000-02-01",
+            "2000-03-01",
+            "2000-04-01",
+            "2000-05-01",
+            "2000-06-01",
+          ],
+          driver_values: [0.1, -0.2, 0.3, -0.1, 0.4, -0.3],
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /SDC Map/i }).click();
+  await page.locator("#map_n_positive_peaks").fill("0");
+  await page.locator("#map_n_negative_peaks").fill("0");
+
+  await expect.poll(() => previewRequest?.n_positive_peaks).toBe(0);
+  await expect.poll(() => previewRequest?.n_negative_peaks).toBe(0);
+  await expect(page.getByTestId("map-event-preview-chart")).toBeVisible();
+  await expect(page.locator("#map_event_preview")).toContainText("No selected event is available for preview");
 });
 
 test("custom NetCDF uploads expose extra-dimension selectors and submit the chosen value", async ({ page }) => {
@@ -1275,7 +1678,7 @@ test("map results warn when no valid cells pass filtering", async ({ page }) => 
           runtime_seconds: 1.1,
           figure_png_base64:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-          download_formats: ["png", "nc"],
+          download_formats: ["png", "pdf", "nc"],
           layer_maps: {
             lat: [-10, 10],
             lon: [-150, -130],

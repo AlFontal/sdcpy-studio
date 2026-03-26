@@ -86,6 +86,7 @@ const mapTimeStartInput = document.getElementById("map_time_start");
 const mapTimeEndInput = document.getElementById("map_time_end");
 const mapEventPreview = document.getElementById("map_event_preview");
 const mapEventPreviewChart = document.getElementById("map_event_preview_chart");
+const mapClearEventsButton = document.getElementById("map_clear_events");
 const mapLatMinInput = document.getElementById("map_lat_min");
 const mapLatMaxInput = document.getElementById("map_lat_max");
 const mapLonMinInput = document.getElementById("map_lon_min");
@@ -118,6 +119,7 @@ const mapStaticSummaryGrid = document.getElementById("map_static_summary_grid");
 const mapSelectedCellText = document.getElementById("map_selected_cell");
 const mapSummary = document.getElementById("sdc_map_summary");
 const mapDownloadPngButton = document.getElementById("map_download_png");
+const mapDownloadPdfButton = document.getElementById("map_download_pdf");
 const mapDownloadNcButton = document.getElementById("map_download_nc");
 const mapDownloadPngLabel = document.getElementById("map_download_png_label");
 const mapDatasetDocsContent = document.getElementById("map_dataset_docs_content");
@@ -162,6 +164,7 @@ let mapBoundsShapeSync = false;
 let mapTimePlayTimer = null;
 let mapTimePlaying = false;
 let latestMapDriverPreview = null;
+let mapManualEventSelection = null;
 let mapDriverPreviewToken = 0;
 let mapDriverPreviewDebounceTimer = null;
 let mapFocusedDriverEventKey = "";
@@ -817,6 +820,9 @@ function setMapDownloadButtons(enabled) {
   if (mapDownloadNcButton) {
     mapDownloadNcButton.disabled = !isReady;
   }
+  if (mapDownloadPdfButton) {
+    mapDownloadPdfButton.disabled = !isReady;
+  }
   if (mapDownloadPngButton) {
     mapDownloadPngButton.disabled = !isReady;
   }
@@ -1236,6 +1242,110 @@ function formatMapFieldSelectionsSummary(variableOption = null, selections = nul
   return parts.join(", ");
 }
 
+function normalizeManualEventDates(values) {
+  return Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  ).sort();
+}
+
+function normalizeMapManualEventSelection(selection) {
+  if (!selection) {
+    return null;
+  }
+  const selectedPositiveDates = normalizeManualEventDates(selection.selected_positive_dates);
+  const selectedNegativeDates = normalizeManualEventDates(selection.selected_negative_dates);
+  if (!selectedPositiveDates.length && !selectedNegativeDates.length) {
+    return {
+      selected_positive_dates: [],
+      selected_negative_dates: [],
+    };
+  }
+  return {
+    selected_positive_dates: selectedPositiveDates,
+    selected_negative_dates: selectedNegativeDates,
+  };
+}
+
+function buildManualEventSelectionFromCatalog(catalog) {
+  return normalizeMapManualEventSelection({
+    selected_positive_dates: (Array.isArray(catalog?.selected_positive) ? catalog.selected_positive : []).map((item) =>
+      String(item?.date || "").trim()
+    ),
+    selected_negative_dates: (Array.isArray(catalog?.selected_negative) ? catalog.selected_negative : []).map((item) =>
+      String(item?.date || "").trim()
+    ),
+  });
+}
+
+function syncMapManualSelectionFromCatalog(catalog) {
+  const selectionMode = String(catalog?.selection_mode || "").trim().toLowerCase();
+  mapManualEventSelection =
+    selectionMode === "manual" ? buildManualEventSelectionFromCatalog(catalog) : null;
+}
+
+function clearMapManualEventSelection() {
+  mapManualEventSelection = null;
+}
+
+function resetMapManualEventSelection() {
+  clearMapManualEventSelection();
+  mapFocusedDriverEventKey = "";
+}
+
+function getMapCurrentPreviewCatalog() {
+  return latestMapDriverPreview?.event_catalog || latestMapExplore?.event_catalog || latestMapResult?.event_catalog || {};
+}
+
+function getMapCurrentPreviewData() {
+  return latestMapDriverPreview || latestMapExplore || null;
+}
+
+function toggleManualMapEventSelection(eventDate, eventValue) {
+  const date = String(eventDate || "").trim();
+  const numericValue = Number(eventValue);
+  if (!date) {
+    return false;
+  }
+  if (!Number.isFinite(numericValue)) {
+    setMapStatus(`Cannot select ${date}: the driver value is not finite.`, true);
+    return false;
+  }
+  if (numericValue === 0) {
+    setMapStatus(`Cannot select ${date}: the driver value is exactly zero.`, true);
+    return false;
+  }
+
+  const catalog = getMapCurrentPreviewCatalog();
+  const nextSelection = normalizeMapManualEventSelection(
+    mapManualEventSelection || buildManualEventSelectionFromCatalog(catalog) || {}
+  ) || {
+    selected_positive_dates: [],
+    selected_negative_dates: [],
+  };
+  const positiveDates = new Set(nextSelection.selected_positive_dates);
+  const negativeDates = new Set(nextSelection.selected_negative_dates);
+  if (positiveDates.has(date) || negativeDates.has(date)) {
+    positiveDates.delete(date);
+    negativeDates.delete(date);
+  } else if (numericValue > 0) {
+    positiveDates.add(date);
+    negativeDates.delete(date);
+  } else {
+    negativeDates.add(date);
+    positiveDates.delete(date);
+  }
+  mapManualEventSelection = normalizeMapManualEventSelection({
+    selected_positive_dates: Array.from(positiveDates),
+    selected_negative_dates: Array.from(negativeDates),
+  });
+  mapFocusedDriverEventKey = "";
+  return true;
+}
+
 function renderMapFieldDimensionSelectors() {
   if (!mapFieldDimensionSelectors) {
     return;
@@ -1340,6 +1450,7 @@ function getMapConfig() {
     field_upload_id: customField ? mapCustomFieldUpload.upload_id : null,
     field_variable: customField ? mapFieldVariableSelect?.value || null : null,
     field_dimension_selections: fieldDimensionSelections,
+    manual_event_selection: mapManualEventSelection,
     correlation_width: Math.max(2, Math.round(Number(mapCorrelationWidthInput?.value) || 12)),
     n_positive_peaks: Math.max(0, Math.round(Number(mapPositivePeaksInput?.value) || 0)),
     n_negative_peaks: Math.max(0, Math.round(Number(mapNegativePeaksInput?.value) || 0)),
@@ -1376,6 +1487,7 @@ function getMapDriverPreviewConfig() {
     driver_upload_id: customDriver ? mapCustomDriverUpload.upload_id : null,
     driver_date_column: customDriver ? mapDriverDateSelect?.value || null : null,
     driver_value_column: customDriver ? mapDriverValueSelect?.value || null : null,
+    manual_event_selection: mapManualEventSelection,
     correlation_width: Math.max(2, Math.round(Number(mapCorrelationWidthInput?.value) || 12)),
     n_positive_peaks: Math.max(0, Math.round(Number(mapPositivePeaksInput?.value) || 0)),
     n_negative_peaks: Math.max(0, Math.round(Number(mapNegativePeaksInput?.value) || 0)),
@@ -1621,6 +1733,7 @@ function getEventWindowBounds(eventIndex, timeIndex, correlationWidth) {
 function buildMapDriverEvent(item, status, correlationWidth, timeIndex) {
   const sign = String(item?.sign || "");
   const date = formatShortIsoDate(item?.date || "");
+  const source = String(item?.source || "auto");
   const value = Number(item?.value);
   const bounds = getEventWindowBounds(item?.index, timeIndex, correlationWidth);
   return {
@@ -1628,8 +1741,9 @@ function buildMapDriverEvent(item, status, correlationWidth, timeIndex) {
     date,
     value,
     sign,
+    source,
     status,
-    key: `${status}:${sign}:${date}`,
+    key: `${status}:${source}:${sign}:${date}`,
     windowStart: bounds.start,
     windowEnd: bounds.end,
   };
@@ -1693,6 +1807,7 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
   const positive = eventGroups.selectedPositive;
   const negative = eventGroups.selectedNegative;
   const warnings = Array.isArray(eventCatalog.warnings) ? eventCatalog.warnings : [];
+  const selectionMode = String(eventCatalog.selection_mode || "auto").trim().toLowerCase();
   const betaThreshold = Number(eventCatalog.base_state_threshold);
   const thresholdLabel = Number.isFinite(betaThreshold) ? betaThreshold.toFixed(3) : "Not available";
   const baseStateCount = Number.isFinite(Number(eventCatalog.base_state_count))
@@ -1708,6 +1823,7 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
 
   mapEventPreview.innerHTML = [
     `<p><strong>${escapeHtml(toSentenceCase(contextLabel))} preview</strong></p>`,
+    `<p class="hint"><strong>Selection mode:</strong> ${escapeHtml(selectionMode)}</p>`,
     `<p class="map-event-focus${focusedEvent ? " is-active" : ""}"><strong>Preview event:</strong> ${escapeHtml(
       focusSummary
     )}</p>`,
@@ -1787,19 +1903,22 @@ async function renderMapEventPreviewChart(preview, catalog) {
   const eventGroups = getMapDriverEventsByStatus(catalog, correlationWidth);
   const selectedPositive = eventGroups.selectedPositive;
   const selectedNegative = eventGroups.selectedNegative;
+  const ignoredPositive = eventGroups.ignoredPositive;
+  const ignoredNegative = eventGroups.ignoredNegative;
   const threshold = Number(catalog?.base_state_threshold);
   resolveFocusedMapDriverEvent(catalog, correlationWidth);
 
-  const buildMarkerTrace = (events, name, color, symbol) => {
+  const buildMarkerTrace = (events, name, color, symbol, status, source) => {
     const points = events
       .map((item) => ({
         x: String(item?.date || ""),
         y: Number.isFinite(Number(item?.value)) ? Number(item.value) : seriesLookup.get(String(item?.date || "")),
-        customdata: [
-          String(item?.key || ""),
-        ],
+        customdata: [String(item?.key || ""), String(item?.date || ""), Number(item?.value), status, source],
       }))
       .filter((item) => item.x && Number.isFinite(item.y));
+    if (!points.length) {
+      return null;
+    }
     return {
       type: "scatter",
       mode: "markers",
@@ -1808,12 +1927,14 @@ async function renderMapEventPreviewChart(preview, catalog) {
       y: points.map((item) => item.y),
       customdata: points.map((item) => item.customdata),
       marker: {
-        size: 11,
+        size: status === "ignored" ? 7 : 9,
         color,
         symbol,
-        line: { color, width: 1.2 },
+        opacity: status === "ignored" ? 0.32 : 0.82,
+        line: { color, width: status === "ignored" ? 0.6 : 1.0 },
       },
       hoverinfo: "skip",
+      showlegend: false,
     };
   };
 
@@ -1829,10 +1950,10 @@ async function renderMapEventPreviewChart(preview, catalog) {
         x1: item.windowEnd,
         y0: 0,
         y1: 1,
-        fillcolor: positive ? "rgba(232, 93, 93, 0.08)" : "rgba(78, 161, 255, 0.08)",
+        fillcolor: positive ? "rgba(232, 93, 93, 0.05)" : "rgba(78, 161, 255, 0.05)",
         line: {
           width: 0,
-          color: positive ? "rgba(232, 93, 93, 0.85)" : "rgba(78, 161, 255, 0.85)",
+          color: positive ? "rgba(232, 93, 93, 0.5)" : "rgba(78, 161, 255, 0.5)",
         },
         layer: "below",
       };
@@ -1845,12 +1966,60 @@ async function renderMapEventPreviewChart(preview, catalog) {
       name: "Driver",
       x: seriesPoints.map((item) => item.date),
       y: seriesPoints.map((item) => item.value),
+      customdata: seriesPoints.map((item) => [String(item.date), Number(item.value)]),
       line: { color: plotTheme.ink, width: 2.2 },
-      hoverinfo: "skip",
+      hovertemplate: "%{x}<br>Value=%{y:.3f}<extra></extra>",
+      showlegend: false,
     },
-    buildMarkerTrace(selectedPositive, "Selected positive", "#e85d5d", "triangle-up"),
-    buildMarkerTrace(selectedNegative, "Selected negative", "#4ea1ff", "triangle-down"),
-  ];
+    buildMarkerTrace(
+      selectedPositive.filter((item) => item.source === "auto"),
+      "Auto positive",
+      "#e85d5d",
+      "triangle-up",
+      "selected",
+      "auto"
+    ),
+    buildMarkerTrace(
+      selectedPositive.filter((item) => item.source !== "auto"),
+      "Manual positive",
+      "#b71c1c",
+      "diamond",
+      "selected",
+      "manual"
+    ),
+    buildMarkerTrace(
+      ignoredPositive,
+      "Ignored positive",
+      "#f5a3a0",
+      "circle-open",
+      "ignored",
+      "auto"
+    ),
+    buildMarkerTrace(
+      selectedNegative.filter((item) => item.source === "auto"),
+      "Auto negative",
+      "#4ea1ff",
+      "triangle-down",
+      "selected",
+      "auto"
+    ),
+    buildMarkerTrace(
+      selectedNegative.filter((item) => item.source !== "auto"),
+      "Manual negative",
+      "#1f4fa8",
+      "diamond",
+      "selected",
+      "manual"
+    ),
+    buildMarkerTrace(
+      ignoredNegative,
+      "Ignored negative",
+      "#9cc7ff",
+      "circle-open",
+      "ignored",
+      "auto"
+    ),
+  ].filter(Boolean);
   if (Number.isFinite(threshold) && threshold > 0) {
     traces.push(
       {
@@ -1860,6 +2029,7 @@ async function renderMapEventPreviewChart(preview, catalog) {
         x: seriesPoints.map((item) => item.date),
         y: seriesPoints.map(() => threshold),
         line: { color: "#f6c86f", width: 1.4, dash: "dot" },
+        showlegend: false,
         hoverinfo: "skip",
       },
       {
@@ -1880,14 +2050,8 @@ async function renderMapEventPreviewChart(preview, catalog) {
     height: 220,
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
-    showlegend: true,
+    showlegend: false,
     shapes: windowShapes,
-    legend: {
-      orientation: "h",
-      y: 1.16,
-      x: 0,
-      font: { size: 10, color: plotTheme.ink },
-    },
     xaxis: {
       showgrid: false,
       tickfont: { size: 10, color: plotTheme.muted },
@@ -1902,9 +2066,15 @@ async function renderMapEventPreviewChart(preview, catalog) {
       zerolinecolor: plotTheme.gridColor,
       gridcolor: plotTheme.gridColor,
     },
-    hovermode: "x unified",
+    hovermode: "closest",
   };
   applyPlotlyLayoutTheme(layout, plotTheme, ["xaxis", "yaxis"]);
+  layout.hoverlabel = {
+    ...(layout.hoverlabel || {}),
+    bgcolor: colorWithAlpha(plotTheme.surface, 0.92, "rgba(255,255,255,0.92)"),
+    bordercolor: colorWithAlpha(plotTheme.line, 0.78, "rgba(209,213,219,0.78)"),
+    font: { ...((layout.hoverlabel && layout.hoverlabel.font) || {}), color: plotTheme.ink },
+  };
   await window.Plotly.newPlot(mapEventPreviewChart, traces, layout, {
     responsive: true,
     displaylogo: false,
@@ -1926,13 +2096,30 @@ async function renderMapEventPreviewChart(preview, catalog) {
   if (typeof mapEventPreviewChart.on === "function") {
     mapEventPreviewChart.on("plotly_click", (event) => {
       const clicked = event?.points?.[0];
-      const key = clicked?.customdata?.[0];
-      if (!key) {
+      const traceName = String(clicked?.data?.name || clicked?.fullData?.name || "");
+      if (!traceName) {
         return;
       }
-      mapFocusedDriverEventKey = String(key);
-      renderMapEventPreview(catalog, mapEventPreviewContextLabel, { correlationWidth });
-      void renderMapEventPreviewChart(preview, catalog);
+      if (traceName === "Driver") {
+        const eventDate = String(clicked?.customdata?.[0] || clicked?.x || "");
+        const eventValue = Number(clicked?.customdata?.[1] ?? clicked?.y);
+        if (!toggleManualMapEventSelection(eventDate, eventValue)) {
+          return;
+        }
+      } else {
+        const key = String(clicked?.customdata?.[0] || "");
+        const eventDate = String(clicked?.customdata?.[1] || clicked?.x || "");
+        const eventValue = Number(clicked?.customdata?.[2] ?? clicked?.y);
+        const eventStatus = String(clicked?.customdata?.[3] || "");
+        if (eventStatus === "selected" && key) {
+          mapFocusedDriverEventKey = key;
+        }
+        if (!toggleManualMapEventSelection(eventDate, eventValue)) {
+          return;
+        }
+      }
+      invalidateMapPreparation();
+      void refreshMapDriverPreview({ immediate: true });
     });
   }
 }
@@ -1962,6 +2149,7 @@ async function refreshMapDriverPreview({ immediate = false } = {}) {
         return;
       }
       latestMapDriverPreview = data.result;
+      syncMapManualSelectionFromCatalog(latestMapDriverPreview.event_catalog || {});
       renderMapEventPreview(
         latestMapDriverPreview.event_catalog || {},
         `${config.driver_dataset || "driver"} driver`
@@ -4696,9 +4884,9 @@ function triggerDownload(fmt) {
 }
 
 function triggerMapDownload(fmt) {
-  if (latestMapJobId && (fmt === "png" || fmt === "nc")) {
+  if (latestMapJobId && (fmt === "png" || fmt === "pdf" || fmt === "nc")) {
     const url =
-      fmt === "png"
+      fmt === "png" || fmt === "pdf"
         ? `/api/v1/jobs/sdc-map/${latestMapJobId}/download/${fmt}?sign=${encodeURIComponent(mapActiveClass)}`
         : `/api/v1/jobs/sdc-map/${latestMapJobId}/download/${fmt}`;
     window.open(url, "_blank");
@@ -5597,6 +5785,7 @@ async function fetchMapResult(jobId) {
   const payload = await response.json();
   const result = payload.result;
   latestMapResult = result;
+  syncMapManualSelectionFromCatalog(result.event_catalog || {});
   latestMapJobId = jobId;
   const positiveCount = Number(result?.class_results?.positive?.summary?.selected_event_count || 0);
   const negativeCount = Number(result?.class_results?.negative?.summary?.selected_event_count || 0);
@@ -5664,6 +5853,7 @@ async function submitMapExplore() {
       throw new Error(data.detail || "Unable to load map exploration.");
     }
     latestMapExplore = data.result;
+    syncMapManualSelectionFromCatalog(latestMapExplore.event_catalog || {});
     const summary = latestMapExplore?.summary || {};
     if (mapDatasetCatalog?.drivers?.length) {
       const driverKey = String(summary.driver_dataset || mapDriverDatasetInput?.value || "");
@@ -6052,6 +6242,16 @@ function attachHandlers() {
   if (mapDownloadPngButton) {
     mapDownloadPngButton.addEventListener("click", () => triggerMapDownload("png"));
   }
+  if (mapDownloadPdfButton) {
+    mapDownloadPdfButton.addEventListener("click", () => triggerMapDownload("pdf"));
+  }
+  if (mapClearEventsButton) {
+    mapClearEventsButton.addEventListener("click", async () => {
+      resetMapManualEventSelection();
+      invalidateMapPreparation();
+      await refreshMapDriverPreview({ immediate: true });
+    });
+  }
   if (mapDownloadNcButton) {
     mapDownloadNcButton.addEventListener("click", () => triggerMapDownload("nc"));
   }
@@ -6120,6 +6320,7 @@ function attachHandlers() {
   }
   if (mapDriverSourceInput) {
     mapDriverSourceInput.addEventListener("change", async () => {
+      resetMapManualEventSelection();
       syncMapSourceControls();
       if (isCustomMapDriverSelected()) {
         applyUploadedMapDriverDefaults();
@@ -6147,6 +6348,7 @@ function attachHandlers() {
   if (mapDriverFileInput) {
     mapDriverFileInput.addEventListener("change", async () => {
       try {
+        resetMapManualEventSelection();
         const file = mapDriverFileInput.files?.[0] || null;
         if (file && mapDriverSourceInput) {
           mapDriverSourceInput.value = "upload";
@@ -6177,6 +6379,7 @@ function attachHandlers() {
   }
   if (mapDriverDateSelect) {
     mapDriverDateSelect.addEventListener("change", () => {
+      resetMapManualEventSelection();
       renderMapSelectorMetadata();
       renderMapDatasetDocs();
       void refreshMapDriverPreview({ immediate: true });
@@ -6185,6 +6388,7 @@ function attachHandlers() {
   }
   if (mapDriverValueSelect) {
     mapDriverValueSelect.addEventListener("change", () => {
+      resetMapManualEventSelection();
       renderMapSelectorMetadata();
       renderMapDatasetDocs();
       void refreshMapDriverPreview({ immediate: true });
@@ -6202,6 +6406,7 @@ function attachHandlers() {
   }
   if (mapDriverDatasetInput) {
     mapDriverDatasetInput.addEventListener("change", async () => {
+      resetMapManualEventSelection();
       try {
         if (!isCustomMapDriverSelected()) {
           await applyMapDriverDefaults(mapDriverDatasetInput.value);
@@ -6239,13 +6444,26 @@ function attachHandlers() {
     mapLonMinInput,
     mapLonMaxInput,
   ].filter(Boolean);
+  const mapSelectionResetInputs = new Set([
+    mapCorrelationWidthInput,
+    mapPositivePeaksInput,
+    mapNegativePeaksInput,
+    mapTimeStartInput,
+    mapTimeEndInput,
+  ].filter(Boolean));
   mapConfigInputs.forEach((input) => {
     input.addEventListener("input", async () => {
+      if (mapSelectionResetInputs.has(input)) {
+        resetMapManualEventSelection();
+      }
       updateMapBoundsNotice();
       await refreshMapDriverPreview();
       invalidateMapPreparation();
     });
     input.addEventListener("change", async () => {
+      if (mapSelectionResetInputs.has(input)) {
+        resetMapManualEventSelection();
+      }
       updateMapBoundsNotice();
       await refreshMapDriverPreview();
       invalidateMapPreparation();
