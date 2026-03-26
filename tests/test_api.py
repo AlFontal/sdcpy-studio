@@ -80,13 +80,14 @@ class InlineJobManager:
                 "valid_cells": 12,
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2010-01-01", "value": 1.2, "sign": "positive"}],
-                "selected_negative": [{"date": "2010-07-01", "value": -1.1, "sign": "negative"}],
+                "selected_positive": [{"date": "2010-01-01", "value": 1.2, "sign": "positive", "source": "auto"}],
+                "selected_negative": [{"date": "2010-07-01", "value": -1.1, "sign": "negative", "source": "auto"}],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.55,
                 "base_state_count": 18,
                 "warnings": [],
+                "selection_mode": "auto",
             },
             "class_results": {
                 "positive": {
@@ -129,11 +130,14 @@ class InlineJobManager:
             "notes": [],
             "runtime_seconds": 0.12,
             "figure_png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-            "download_formats": ["png", "nc"],
+            "download_formats": ["png", "pdf", "nc"],
             "_artifacts_map": {
-                "png": b"\x89PNG\r\n\x1a\n",
+                "png": b"\x89PNG\r\n\x1a\nBOTH",
                 "png_positive": b"\x89PNG\r\n\x1a\nPOS",
                 "png_negative": b"\x89PNG\r\n\x1a\nNEG",
+                "pdf": b"%PDF-1.4\nBOTH",
+                "pdf_positive": b"%PDF-1.4\nPOS",
+                "pdf_negative": b"%PDF-1.4\nNEG",
                 "nc": b"CDF\x01",
                 "driver_dataset": request.driver_dataset,
                 "field_dataset": request.field_dataset,
@@ -672,13 +676,14 @@ def test_map_job_endpoints():
     assert result.status_code == 200
     payload = result.json()["result"]
     assert payload["summary"]["driver_dataset"] == "pdo"
-    assert payload["download_formats"] == ["png", "nc"]
+    assert payload["download_formats"] == ["png", "pdf", "nc"]
     assert payload["summary"]["correlation_width"] == 12
 
     png = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png")
     assert png.status_code == 200
     assert png.headers["content-type"] == "image/png"
     assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert png.content.endswith(b"BOTH")
     assert 'positive_negative.png"' in png.headers["content-disposition"]
 
     png_positive = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png?sign=positive")
@@ -690,6 +695,23 @@ def test_map_job_endpoints():
     assert png_negative.status_code == 200
     assert png_negative.content.endswith(b"NEG")
     assert 'negative.png"' in png_negative.headers["content-disposition"]
+
+    pdf = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/pdf")
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF-1.4")
+    assert pdf.content.endswith(b"BOTH")
+    assert 'positive_negative.pdf"' in pdf.headers["content-disposition"]
+
+    pdf_positive = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/pdf?sign=positive")
+    assert pdf_positive.status_code == 200
+    assert pdf_positive.content.endswith(b"POS")
+    assert 'positive.pdf"' in pdf_positive.headers["content-disposition"]
+
+    pdf_negative = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/pdf?sign=negative")
+    assert pdf_negative.status_code == 200
+    assert pdf_negative.content.endswith(b"NEG")
+    assert 'negative.pdf"' in pdf_negative.headers["content-disposition"]
 
     nc = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/nc")
     assert nc.status_code == 200
@@ -1041,13 +1063,14 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
                 "field_variable": "sst_anom",
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2000-06-01", "value": 1.2, "sign": "positive"}],
-                "selected_negative": [{"date": "2001-01-01", "value": -1.1, "sign": "negative"}],
+                "selected_positive": [{"date": "2000-06-01", "value": 1.2, "sign": "positive", "source": "manual"}],
+                "selected_negative": [{"date": "2001-01-01", "value": -1.1, "sign": "negative", "source": "auto"}],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.55,
                 "base_state_count": 8,
                 "warnings": [],
+                "selection_mode": "manual",
             },
             "time_index": ["2000-01-01"],
             "driver_values": [0.1],
@@ -1072,6 +1095,10 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
         "correlation_width": 12,
         "n_positive_peaks": 3,
         "n_negative_peaks": 3,
+        "manual_event_selection": {
+            "selected_positive_dates": ["2000-06-01"],
+            "selected_negative_dates": ["2001-01-01"],
+        },
         "base_state_beta": 0.5,
         "n_permutations": 9,
         "alpha": 0.05,
@@ -1085,6 +1112,7 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
     assert captured["explore"]["field_upload_path"]
     assert captured["explore"]["driver_upload_filename"] == "driver.csv"
     assert captured["explore"]["field_upload_filename"] == "field.nc"
+    assert captured["explore"]["manual_event_selection"]["selected_positive_dates"] == ["2000-06-01"]
     assert explore.json()["result"]["summary"]["driver_source_type"] == "upload"
 
     submit = client.post("/api/v1/jobs/sdc-map", json=explore_payload)
@@ -1302,10 +1330,11 @@ def test_map_defaults_endpoint(monkeypatch):
 def test_map_driver_preview_endpoint(monkeypatch):
     app = create_app(job_manager=InlineJobManager())
     client = TestClient(app)
+    captured = {}
 
-    monkeypatch.setattr(
-        "sdcpy_studio.main.build_sdc_map_driver_preview",
-        lambda payload: {
+    def fake_preview(payload):
+        captured["payload"] = payload
+        return {
             "summary": {
                 "driver_dataset": payload["driver_dataset"],
                 "time_start": "2000-01-01",
@@ -1317,18 +1346,20 @@ def test_map_driver_preview_endpoint(monkeypatch):
                 "n_points": 24,
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2000-08-01", "value": 1.1, "sign": "positive"}],
-                "selected_negative": [{"date": "2001-01-01", "value": -0.9, "sign": "negative"}],
+                "selected_positive": [{"date": "2000-08-01", "value": 1.1, "sign": "positive", "source": "manual"}],
+                "selected_negative": [{"date": "2001-01-01", "value": -0.9, "sign": "negative", "source": "auto"}],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.45,
                 "base_state_count": 8,
                 "warnings": [],
+                "selection_mode": "manual",
             },
             "time_index": ["2000-01-01", "2000-02-01"],
             "driver_values": [0.1, 0.3],
-        },
-    )
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_driver_preview", fake_preview)
 
     response = client.post(
         "/api/v1/sdc-map/driver/preview",
@@ -1339,6 +1370,10 @@ def test_map_driver_preview_endpoint(monkeypatch):
             "n_positive_peaks": 2,
             "n_negative_peaks": 1,
             "base_state_beta": 0.5,
+            "manual_event_selection": {
+                "selected_positive_dates": ["2000-08-01"],
+                "selected_negative_dates": ["2001-01-01"],
+            },
         },
     )
     assert response.status_code == 200
@@ -1346,3 +1381,91 @@ def test_map_driver_preview_endpoint(monkeypatch):
     assert payload["status"] == "ready"
     assert payload["result"]["summary"]["n_positive_peaks"] == 2
     assert payload["result"]["event_catalog"]["selected_positive"][0]["date"] == "2000-08-01"
+    assert payload["result"]["event_catalog"]["selected_positive"][0]["source"] == "manual"
+    assert payload["result"]["event_catalog"]["selection_mode"] == "manual"
+    assert captured["payload"]["manual_event_selection"]["selected_positive_dates"] == ["2000-08-01"]
+
+
+def test_map_driver_preview_endpoint_accepts_zero_seed_counts(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+    captured = {}
+
+    def fake_preview(payload):
+        captured["payload"] = payload
+        return {
+            "summary": {
+                "driver_dataset": payload["driver_dataset"],
+                "time_start": "2000-01-01",
+                "time_end": "2001-12-01",
+                "correlation_width": 12,
+                "n_positive_peaks": 0,
+                "n_negative_peaks": 0,
+                "base_state_beta": 0.5,
+                "n_points": 24,
+            },
+            "event_catalog": {
+                "selected_positive": [],
+                "selected_negative": [],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": 0.45,
+                "base_state_count": 8,
+                "warnings": [],
+                "selection_mode": "auto",
+            },
+            "time_index": ["2000-01-01", "2000-02-01"],
+            "driver_values": [0.1, 0.3],
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_driver_preview", fake_preview)
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/preview",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 0,
+            "n_negative_peaks": 0,
+            "base_state_beta": 0.5,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["event_catalog"]["selected_positive"] == []
+    assert response.json()["result"]["event_catalog"]["selected_negative"] == []
+    assert captured["payload"]["n_positive_peaks"] == 0
+    assert captured["payload"]["n_negative_peaks"] == 0
+
+
+def test_map_explore_endpoint_rejects_empty_event_selection(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    def fake_build(_payload):
+        raise ValueError(
+            "Select at least one positive or negative driver event before loading the dataset. "
+            "You can seed events with N+/N- or click the preview chart to add them manually."
+        )
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_exploration", fake_build)
+
+    response = client.post(
+        "/api/v1/sdc-map/explore",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 0,
+            "n_negative_peaks": 0,
+            "base_state_beta": 0.5,
+            "n_permutations": 9,
+            "alpha": 0.05,
+            "min_lag": -4,
+            "max_lag": 4,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Select at least one positive or negative driver event before loading the dataset." in response.json()["detail"]

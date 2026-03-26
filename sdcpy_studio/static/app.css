@@ -735,6 +735,36 @@ textarea {
   align-items: baseline;
 }
 
+.map-preview-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 12px;
+  margin-top: 10px;
+}
+
+.map-preview-controls label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.76rem;
+}
+
+.map-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.map-preview-actions .btn {
+  flex: 0 0 auto;
+}
+
+.map-preview-actions .hint {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
 .map-event-preview {
   font-size: 0.76rem;
   line-height: 1.45;
@@ -745,7 +775,7 @@ textarea {
 .map-event-preview-chart {
   width: 100%;
   min-height: 220px;
-  margin: 6px 0 10px;
+  margin: 10px 0 10px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface-soft) 82%, transparent);
@@ -779,6 +809,13 @@ textarea {
 .map-event-focus.is-active {
   border-color: var(--accent-2);
   background: color-mix(in srgb, var(--accent-2) 14%, var(--surface) 86%);
+}
+
+@media (max-width: 720px) {
+  .map-preview-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 .plot-controls .btn {

@@ -67,6 +67,13 @@ class SDCJobFromDatasetRequest(BaseModel):
     max_memory_gb: float = Field(1.0, ge=0.1, le=16.0)
 
 
+class ManualEventSelection(BaseModel):
+    """Explicit user-selected driver events for SDC Map."""
+
+    selected_positive_dates: list[str] = Field(default_factory=list)
+    selected_negative_dates: list[str] = Field(default_factory=list)
+
+
 class SDCMapJobRequest(BaseModel):
     """Request body for launching a beta SDC map computation job."""
 
@@ -80,6 +87,7 @@ class SDCMapJobRequest(BaseModel):
     field_upload_id: str | None = None
     field_variable: str | None = None
     field_dimension_selections: dict[str, str] = Field(default_factory=dict)
+    manual_event_selection: ManualEventSelection | None = None
     # Server-populated resolved file paths for uploaded assets.
     driver_upload_path: str | None = None
     field_upload_path: str | None = None
@@ -128,8 +136,6 @@ class SDCMapJobRequest(BaseModel):
                 raise ValueError("`field_upload_id` is required when `field_source_type` is 'upload'.")
             if not self.field_variable:
                 raise ValueError("`field_variable` is required when `field_source_type` is 'upload'.")
-        if self.n_positive_peaks == 0 and self.n_negative_peaks == 0:
-            raise ValueError("At least one of `n_positive_peaks` or `n_negative_peaks` must be > 0.")
         if self.min_lag > self.max_lag:
             raise ValueError("`min_lag` must be <= `max_lag`.")
         bounds = (self.lat_min, self.lat_max, self.lon_min, self.lon_max)
@@ -218,6 +224,7 @@ class DriverEventPreviewItem(BaseModel):
     date: str
     value: float
     sign: Literal["positive", "negative"]
+    source: Literal["auto", "manual"] = "auto"
 
 
 class DriverEventCatalog(BaseModel):
@@ -230,6 +237,7 @@ class DriverEventCatalog(BaseModel):
     base_state_threshold: float | None = None
     base_state_count: int = 0
     warnings: list[str] = Field(default_factory=list)
+    selection_mode: Literal["auto", "manual"] = "auto"
 
 
 class FieldDims(BaseModel):

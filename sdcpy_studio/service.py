@@ -417,14 +417,25 @@ def _derive_driver_defaults(driver: pd.Series) -> dict[str, object]:
 
 def _public_event_catalog(catalog: dict[str, object] | None) -> dict[str, object]:
     raw = catalog or {}
+    def _normalize_event_item(item: object) -> dict[str, object]:
+        payload = dict(item or {})
+        return {
+            "index": int(payload["index"]) if payload.get("index") is not None else None,
+            "date": str(payload.get("date") or ""),
+            "value": float(payload.get("value") or 0.0),
+            "sign": str(payload.get("sign") or ""),
+            "source": str(payload.get("source") or "auto"),
+        }
+
     return {
-        "selected_positive": list(raw.get("selected_positive") or []),
-        "selected_negative": list(raw.get("selected_negative") or []),
-        "ignored_positive": list(raw.get("ignored_positive") or []),
-        "ignored_negative": list(raw.get("ignored_negative") or []),
+        "selected_positive": [_normalize_event_item(item) for item in (raw.get("selected_positive") or [])],
+        "selected_negative": [_normalize_event_item(item) for item in (raw.get("selected_negative") or [])],
+        "ignored_positive": [_normalize_event_item(item) for item in (raw.get("ignored_positive") or [])],
+        "ignored_negative": [_normalize_event_item(item) for item in (raw.get("ignored_negative") or [])],
         "base_state_threshold": raw.get("base_state_threshold"),
         "base_state_count": int(raw.get("base_state_count") or 0),
         "warnings": [str(item) for item in (raw.get("warnings") or [])],
+        "selection_mode": str(raw.get("selection_mode") or "auto"),
     }
 
 
@@ -435,9 +446,10 @@ def _detect_driver_event_catalog(
     n_positive_peaks: int = 3,
     n_negative_peaks: int = 3,
     base_state_beta: float = 0.5,
+    manual_event_selection: dict[str, object] | None = None,
 ) -> dict[str, object]:
     try:
-        from sdcpy_map import SDCMapConfig, detect_driver_events
+        from sdcpy_map import SDCMapConfig, resolve_driver_event_catalog
     except ImportError as exc:
         raise ValueError(
             "SDC Map dependencies are unavailable in this environment. Install project dependencies with `uv sync`."
@@ -449,7 +461,13 @@ def _detect_driver_event_catalog(
         n_negative_peaks=int(n_negative_peaks),
         base_state_beta=float(base_state_beta),
     )
-    return _public_event_catalog(detect_driver_events(driver.sort_index(), config))
+    return _public_event_catalog(
+        resolve_driver_event_catalog(
+            driver.sort_index(),
+            config,
+            manual_event_selection=manual_event_selection,
+        )
+    )
 
 
 def _emit_progress(
@@ -1580,6 +1598,11 @@ def export_sdc_map_artifact(job_result: dict, fmt: str, sign: str | None = None)
             payload = artifacts.get(f"png_{sign_key}") or artifacts["png"]
             return payload, "image/png", f"{basename}.png"
         return artifacts["png"], "image/png", f"{basename}.png"
+    if fmt_key == "pdf":
+        if sign_key:
+            payload = artifacts.get(f"pdf_{sign_key}") or artifacts["pdf"]
+            return payload, "application/pdf", f"{basename}.pdf"
+        return artifacts["pdf"], "application/pdf", f"{basename}.pdf"
     if fmt_key == "nc":
         return artifacts["nc"], "application/x-netcdf", f"{basename}.nc"
     raise ValueError(f"Unsupported download format: {fmt}")
@@ -1612,6 +1635,30 @@ def _serialize_optional_matrix(values: np.ndarray) -> list[list[float | None]]:
     for row in arr:
         matrix.append([float(v) if np.isfinite(v) else None for v in row.tolist()])
     return matrix
+
+
+def _event_window_bounds(event_idx: int, width: int, series_len: int) -> tuple[int, int] | None:
+    half_before = (int(width) - 1) // 2
+    half_after = int(width) - 1 - half_before
+    start = int(event_idx) - half_before
+    stop = int(event_idx) + half_after + 1
+    if start < 0 or stop > int(series_len):
+        return None
+    return start, stop
+
+
+def _selected_event_count(event_catalog: dict[str, object] | None) -> int:
+    catalog = event_catalog or {}
+    return len(catalog.get("selected_positive") or []) + len(catalog.get("selected_negative") or [])
+
+
+def _require_selected_map_events(event_catalog: dict[str, object] | None, *, action: str) -> None:
+    if _selected_event_count(event_catalog) > 0:
+        return
+    raise ValueError(
+        f"Select at least one positive or negative driver event before {action}. "
+        "You can seed events with N+/N- or click the preview chart to add them manually."
+    )
 
 
 def _serialize_optional_cube(values: np.ndarray) -> list[list[list[float | None]]]:
@@ -1985,7 +2032,93 @@ def _render_map_class_static_png(
     return png_bytes
 
 
-def _combine_map_class_pngs(images: list[tuple[str, bytes]]) -> bytes:
+def _resolve_report_event_index(
+    event: dict[str, object],
+    *,
+    date_to_index: dict[str, int],
+    series_len: int,
+) -> int | None:
+    raw_index = event.get("index")
+    if raw_index is not None:
+        try:
+            event_index = int(raw_index)
+        except (TypeError, ValueError):
+            event_index = None
+        else:
+            if 0 <= event_index < series_len:
+                return event_index
+    event_date = str(event.get("date") or "").strip()
+    if not event_date:
+        return None
+    return date_to_index.get(event_date)
+
+
+def _render_map_driver_events_panel_png(
+    *,
+    sign_label: str,
+    correlation_width: int,
+    time_index: list[str],
+    driver_values: list[float | None],
+    event_catalog: dict[str, object],
+    active_sign: str,
+) -> bytes:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    dates = pd.to_datetime(time_index)
+    values = np.asarray(
+        [float(value) if value is not None and np.isfinite(value) else np.nan for value in driver_values],
+        dtype=float,
+    )
+    date_to_index = {stamp.date().isoformat(): idx for idx, stamp in enumerate(dates)}
+    fig, ax = plt.subplots(figsize=(12, 3.4))
+    ax.plot(dates, values, color="#22384d", linewidth=1.8)
+    ax.axhline(0.0, color="#8b98a6", linewidth=0.9, linestyle="--")
+
+    sign_order = ("positive", "negative")
+    sign_colors = {
+        "positive": {"fill": "#f3b2ae"},
+        "negative": {"fill": "#bfd6ff"},
+    }
+    active_sign_key = str(active_sign).strip().lower()
+    for sign_key in sign_order:
+        events = list(event_catalog.get(f"selected_{sign_key}") or [])
+        if not events:
+            continue
+        shade_alpha = 0.10 if sign_key == active_sign_key else 0.045
+        for event in events:
+            event_index = _resolve_report_event_index(event, date_to_index=date_to_index, series_len=len(dates))
+            if event_index is None:
+                continue
+            bounds = _event_window_bounds(event_index, int(correlation_width), len(dates))
+            if bounds is not None:
+                start_idx, stop_idx = bounds
+                ax.axvspan(
+                    dates[start_idx],
+                    dates[stop_idx - 1],
+                    color=sign_colors[sign_key]["fill"],
+                    alpha=shade_alpha,
+                    linewidth=0,
+                )
+
+    ax.set_title(f"{sign_label} events · driver time series with selected event windows", fontsize=12)
+    ax.set_ylabel("Driver")
+    ax.set_xlabel("Time")
+    ax.grid(alpha=0.18)
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    fig.autofmt_xdate(rotation=25)
+    fig.tight_layout(pad=1.0)
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=180, bbox_inches="tight", pad_inches=0.08)
+    plt.close(fig)
+    return buffer.getvalue()
+
+
+def _combine_map_report_images(images: list[tuple[str, bytes]], *, fmt: str) -> bytes:
     import matplotlib
 
     matplotlib.use("Agg", force=True)
@@ -1996,18 +2129,23 @@ def _combine_map_class_pngs(images: list[tuple[str, bytes]]) -> bytes:
     if not valid_images:
         raise ValueError("No PNG images were available to combine.")
 
-    fig, axes = plt.subplots(len(valid_images), 1, figsize=(12, 7 * len(valid_images)))
+    fig, axes = plt.subplots(
+        len(valid_images),
+        1,
+        figsize=(12, 6.8 * len(valid_images)),
+        gridspec_kw={"hspace": 0.14},
+    )
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes])
 
     for axis, (label, image_bytes) in zip(axes, valid_images, strict=False):
         axis.imshow(mpimg.imread(io.BytesIO(image_bytes), format="png"))
-        axis.set_title(label)
+        axis.set_title(label, pad=10)
         axis.axis("off")
 
-    fig.tight_layout()
+    fig.subplots_adjust(top=0.975, bottom=0.028, left=0.02, right=0.98, hspace=0.16)
     buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=180, bbox_inches="tight", pad_inches=0.04)
+    fig.savefig(buffer, format=fmt, dpi=180, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
     return buffer.getvalue()
 
@@ -2449,12 +2587,18 @@ def build_sdc_map_driver_preview(payload: dict) -> dict:
 
     time_start, time_end = _resolve_map_time_window(request, driver_full)
     driver = _slice_driver_to_window(driver_full, time_start=time_start, time_end=time_end)
+    manual_event_selection = (
+        request.manual_event_selection.model_dump(mode="python")
+        if request.manual_event_selection is not None
+        else None
+    )
     event_catalog = _detect_driver_event_catalog(
         driver,
         correlation_width=request.correlation_width,
         n_positive_peaks=request.n_positive_peaks,
         n_negative_peaks=request.n_negative_peaks,
         base_state_beta=request.base_state_beta,
+        manual_event_selection=manual_event_selection,
     )
     return {
         "summary": {
@@ -2479,6 +2623,7 @@ def _compute_sdcmap_event_layers_with_progress(
     driver: pd.Series,
     mapped_field,
     config,
+    manual_event_selection: dict[str, object] | None,
     progress_hook: Callable[[int, int, str], None] | None,
     progress_base_current: int,
     progress_total: int,
@@ -2511,6 +2656,7 @@ def _compute_sdcmap_event_layers_with_progress(
             driver=driver,
             mapped_field=mapped_field,
             config=config,
+            manual_event_selection=manual_event_selection,
             progress_callback=_cell_progress if progress_hook else None,
         )
 
@@ -2607,13 +2753,20 @@ def build_sdc_map_exploration(payload: dict) -> dict:
     driver = align_driver_to_field(driver, mapped_field)
     coastline = load_coastline(paths["coastline"])
     lats, lons = grid_coordinates(mapped_field)
+    manual_event_selection = (
+        request.manual_event_selection.model_dump(mode="python")
+        if request.manual_event_selection is not None
+        else None
+    )
     event_catalog = _detect_driver_event_catalog(
         driver,
         correlation_width=request.correlation_width,
         n_positive_peaks=request.n_positive_peaks,
         n_negative_peaks=request.n_negative_peaks,
         base_state_beta=request.base_state_beta,
+        manual_event_selection=manual_event_selection,
     )
+    _require_selected_map_events(event_catalog, action="loading the dataset")
 
     time_values = np.asarray(mapped_field["time"].values)
     field_values = np.asarray(mapped_field.values, dtype=float)
@@ -2811,6 +2964,20 @@ def run_sdc_map_job(
     driver = align_driver_to_field(driver, mapped_field)
     lats, lons = grid_coordinates(mapped_field)
     time_step_info = _infer_time_step_info(mapped_field["time"].values)
+    manual_event_selection = (
+        request.manual_event_selection.model_dump(mode="python")
+        if request.manual_event_selection is not None
+        else None
+    )
+    preflight_event_catalog = _detect_driver_event_catalog(
+        driver,
+        correlation_width=request.correlation_width,
+        n_positive_peaks=request.n_positive_peaks,
+        n_negative_peaks=request.n_negative_peaks,
+        base_state_beta=request.base_state_beta,
+        manual_event_selection=manual_event_selection,
+    )
+    _require_selected_map_events(preflight_event_catalog, action="running the map")
 
     n_lat = int(mapped_field.sizes.get("lat", 0))
     n_lon = int(mapped_field.sizes.get("lon", 0))
@@ -2821,6 +2988,7 @@ def run_sdc_map_job(
         driver=driver,
         mapped_field=mapped_field,
         config=config,
+        manual_event_selection=manual_event_selection,
         progress_hook=progress_hook,
         progress_base_current=4,
         progress_total=progress_total,
@@ -2840,20 +3008,6 @@ def run_sdc_map_job(
     )
 
     _emit_progress(progress_hook, progress_total - 2, progress_total, "Rendering event-class figures")
-    positive_png = _render_map_class_png(
-        sign_label="Positive",
-        lag_maps=event_result["positive"]["lag_maps"],
-        lats=lats,
-        lons=lons,
-        coastline=coastline,
-    )
-    negative_png = _render_map_class_png(
-        sign_label="Negative",
-        lag_maps=event_result["negative"]["lag_maps"],
-        lats=lats,
-        lons=lons,
-        coastline=coastline,
-    )
     positive_static_png = _render_map_class_static_png(
         sign_label="Positive",
         layers=event_result["positive"]["layers"],
@@ -2868,19 +3022,67 @@ def run_sdc_map_job(
         lons=lons,
         coastline=coastline,
     )
-    positive_report_png = _combine_map_class_pngs(
+    driver_time_index = _serialize_time_labels(np.asarray(driver.index.to_numpy()))
+    driver_series_values = _serialize_optional_array(driver.to_numpy(dtype=float))
+    positive_driver_panel_png = _render_map_driver_events_panel_png(
+        sign_label="Positive",
+        correlation_width=int(request.correlation_width),
+        time_index=driver_time_index,
+        driver_values=driver_series_values,
+        event_catalog=public_catalog,
+        active_sign="positive",
+    )
+    negative_driver_panel_png = _render_map_driver_events_panel_png(
+        sign_label="Negative",
+        correlation_width=int(request.correlation_width),
+        time_index=driver_time_index,
+        driver_values=driver_series_values,
+        event_catalog=public_catalog,
+        active_sign="negative",
+    )
+    positive_report_png = _combine_map_report_images(
         [
-            ("Positive events · lag explorer", positive_png),
+            ("Positive driver events", positive_driver_panel_png),
             ("Positive events · A/B/C/D", positive_static_png),
-        ]
+        ],
+        fmt="png",
     )
-    negative_report_png = _combine_map_class_pngs(
+    negative_report_png = _combine_map_report_images(
         [
-            ("Negative events · lag explorer", negative_png),
+            ("Negative driver events", negative_driver_panel_png),
             ("Negative events · A/B/C/D", negative_static_png),
-        ]
+        ],
+        fmt="png",
     )
-    png_bytes = positive_report_png
+    positive_report_pdf = _combine_map_report_images(
+        [
+            ("Positive driver events", positive_driver_panel_png),
+            ("Positive events · A/B/C/D", positive_static_png),
+        ],
+        fmt="pdf",
+    )
+    negative_report_pdf = _combine_map_report_images(
+        [
+            ("Negative driver events", negative_driver_panel_png),
+            ("Negative events · A/B/C/D", negative_static_png),
+        ],
+        fmt="pdf",
+    )
+    combined_report_png = _combine_map_report_images(
+        [
+            ("Positive map report", positive_report_png),
+            ("Negative map report", negative_report_png),
+        ],
+        fmt="png",
+    )
+    combined_report_pdf = _combine_map_report_images(
+        [
+            ("Positive map report", positive_report_png),
+            ("Negative map report", negative_report_png),
+        ],
+        fmt="pdf",
+    )
+    png_bytes = combined_report_png
 
     _emit_progress(progress_hook, progress_total - 1, progress_total, "Packing outputs")
     nc_bytes = _build_event_map_netcdf_bytes(
@@ -3018,11 +3220,14 @@ def run_sdc_map_job(
         "runtime_seconds": float(runtime_seconds),
         "figure_png_base64": base64.b64encode(png_bytes).decode("ascii"),
         "layer_maps": layer_maps,
-        "download_formats": ["png", "nc"],
+        "download_formats": ["png", "pdf", "nc"],
         "_artifacts_map": {
-            "png": png_bytes,
+            "png": combined_report_png,
             "png_positive": positive_report_png,
             "png_negative": negative_report_png,
+            "pdf": combined_report_pdf,
+            "pdf_positive": positive_report_pdf,
+            "pdf_negative": negative_report_pdf,
             "nc": nc_bytes,
             "driver_dataset": request.driver_dataset,
             "field_dataset": request.field_dataset,

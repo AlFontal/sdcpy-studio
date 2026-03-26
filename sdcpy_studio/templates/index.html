@@ -460,18 +460,6 @@
                   <label>Significance alpha
                     <input id="map_alpha" type="number" min="0.001" max="0.999" step="0.001" value="0.05" />
                   </label>
-                  <label>Positive events (N+)
-                    <input id="map_n_positive_peaks" type="number" min="0" max="24" value="3" />
-                  </label>
-                  <label>Negative events (N-)
-                    <input id="map_n_negative_peaks" type="number" min="0" max="24" value="3" />
-                  </label>
-                  <label>Base-state beta
-                    <input id="map_base_state_beta" type="number" min="0.05" max="2" step="0.05" value="0.5" />
-                  </label>
-                  <label>Permutations
-                    <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
-                  </label>
                 </div>
                 <div class="map-upload-rows">
                   <div class="map-upload-panel" id="map_driver_upload_panel">
@@ -554,6 +542,28 @@
                   <div class="map-event-preview-header">
                     <p class="map-meta-title">Detected driver events</p>
                     <span class="map-select-meta">Auto-detected preview from the current driver window.</span>
+                  </div>
+                  <div class="map-preview-controls" data-testid="map-preview-controls">
+                    <label>Positive events (N+)
+                      <input id="map_n_positive_peaks" type="number" min="0" max="24" value="3" />
+                    </label>
+                    <label>Negative events (N-)
+                      <input id="map_n_negative_peaks" type="number" min="0" max="24" value="3" />
+                    </label>
+                    <label>Base-state beta
+                      <input id="map_base_state_beta" type="number" min="0.05" max="2" step="0.05" value="0.5" />
+                    </label>
+                    <label>Permutations
+                      <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
+                    </label>
+                  </div>
+                  <div class="map-preview-actions">
+                    <button id="map_clear_events" class="btn secondary" type="button" data-testid="map-clear-events-button">
+                      Clear selected events
+                    </button>
+                    <p class="hint" id="map_preview_hint" data-testid="map-preview-instructions">
+                      Click the chart to add events or remove selected ones.
+                    </p>
                   </div>
                   <div id="map_event_preview_chart" class="map-event-preview-chart" data-testid="map-event-preview-chart"></div>
                   <div id="map_event_preview" class="map-event-preview">
@@ -695,6 +705,10 @@
                     <button id="map_download_png" class="download-tile" type="button" disabled>
                       <span class="download-ext">.png</span>
                       <span id="map_download_png_label" class="download-label">Active-class map report</span>
+                    </button>
+                    <button id="map_download_pdf" class="download-tile" type="button" disabled>
+                      <span class="download-ext">.pdf</span>
+                      <span class="download-label">Active-class map report</span>
                     </button>
                     <button id="map_download_nc" class="download-tile" type="button" disabled>
                       <span class="download-ext">.nc</span>
