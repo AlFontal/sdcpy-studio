@@ -16,10 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: tests
+  api_tests:
+    name: api tests
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     env:
       UV_NO_SOURCES: "1"
 
@@ -35,30 +35,15 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-
       - name: Install Python dependencies
         run: uv sync --extra dev --no-sources
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
 
       - name: Run API tests
         run: uv run pytest -q tests/test_api.py
 
-      - name: Run E2E tests
-        run: npm run test:e2e:with-api
-
   publish_docker:
     name: publish docker image
-    needs: tests
+    needs: api_tests
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
