@@ -780,7 +780,8 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
   await expect(page.getByTestId("map-preview-instructions")).toContainText(
     "Click the chart to add events or remove selected ones."
   );
-  await expect(page.getByTestId("map-clear-events-button")).toBeVisible();
+  await expect(page.getByTestId("map-clear-all-events-button")).toBeVisible();
+  await expect(page.getByTestId("map-clear-manual-events-button")).toBeDisabled();
   await expect(page.locator("#map_event_preview")).toContainText("Positive events (N+)");
   await expect(page.getByTestId("map-event-preview-chart")).toBeVisible();
   const previewChartMeta = await page.evaluate(() => {
@@ -1230,7 +1231,18 @@ test("manual map event curation persists through load and run, and reseeds when 
   ]);
   await expect(page.locator("#map_download_pdf")).toBeEnabled();
 
-  await page.getByTestId("map-clear-events-button").click();
+  await page.getByTestId("map-clear-all-events-button").click();
+  await expect
+    .poll(() => (previewRequest?.manual_event_selection as any)?.selected_positive_dates ?? null)
+    .toEqual([]);
+  await expect
+    .poll(() => (previewRequest?.manual_event_selection as any)?.selected_negative_dates ?? null)
+    .toEqual([]);
+  await expect(page.getByTestId("map-clear-manual-events-button")).toBeEnabled();
+  await expect(page.locator("#map_event_preview")).toContainText("manual");
+  await expect(page.locator("#map_event_preview")).toContainText("Positive events (N+): None");
+
+  await page.getByTestId("map-clear-manual-events-button").click();
   await expect.poll(() => previewRequest?.manual_event_selection ?? null).toBeNull();
   await expect(page.locator("#map_event_preview")).toContainText("auto");
 
@@ -1294,6 +1306,185 @@ test("map preview stays usable when both event seed counts are zero", async ({ p
   await expect.poll(() => previewRequest?.n_negative_peaks).toBe(0);
   await expect(page.getByTestId("map-event-preview-chart")).toBeVisible();
   await expect(page.locator("#map_event_preview")).toContainText("No selected event is available for preview");
+});
+
+test("running map jobs can be stopped from the SDC Map action row", async ({ page }) => {
+  let cancelRequested = false;
+  let statusCalls = 0;
+
+  await page.route("**/api/v1/sdc-map/driver/preview", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            time_start: "2000-01-01",
+            time_end: "2000-12-01",
+            correlation_width: 12,
+            n_positive_peaks: 3,
+            n_negative_peaks: 3,
+            base_state_beta: 0.5,
+            n_points: 12,
+          },
+          event_catalog: {
+            selected_positive: [{ index: 1, date: "2000-02-01", value: 1.2, sign: "positive", source: "auto" }],
+            selected_negative: [{ index: 6, date: "2000-07-01", value: -1.0, sign: "negative", source: "auto" }],
+            ignored_positive: [],
+            ignored_negative: [],
+            base_state_threshold: 0.5,
+            base_state_count: 8,
+            warnings: [],
+            selection_mode: "auto",
+          },
+          time_index: [
+            "2000-01-01",
+            "2000-02-01",
+            "2000-03-01",
+            "2000-04-01",
+            "2000-05-01",
+            "2000-06-01",
+            "2000-07-01",
+            "2000-08-01",
+            "2000-09-01",
+            "2000-10-01",
+            "2000-11-01",
+            "2000-12-01",
+          ],
+          driver_values: [0.1, 1.2, 0.4, -0.2, 0.3, 0.1, -1.0, -0.3, 0.2, 0.4, -0.1, 0.0],
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/sdc-map/explore", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        result: {
+          summary: {
+            driver_dataset: "pdo",
+            field_dataset: "ncep_air",
+            time_start: "2000-01-01",
+            time_end: "2000-12-01",
+            correlation_width: 12,
+            n_positive_peaks: 3,
+            n_negative_peaks: 3,
+            base_state_beta: 0.5,
+            n_time: 12,
+            n_lat: 1,
+            n_lon: 1,
+            valid_values: 12,
+            field_lat_min: -10,
+            field_lat_max: 10,
+            field_lon_min: 120,
+            field_lon_max: 180,
+            field_variable: "air",
+            field_dimension_selections: {},
+            full_bounds_selected: true,
+          },
+          event_catalog: {
+            selected_positive: [{ index: 1, date: "2000-02-01", value: 1.2, sign: "positive", source: "auto" }],
+            selected_negative: [{ index: 6, date: "2000-07-01", value: -1.0, sign: "negative", source: "auto" }],
+            ignored_positive: [],
+            ignored_negative: [],
+            base_state_threshold: 0.5,
+            base_state_count: 8,
+            warnings: [],
+            selection_mode: "auto",
+          },
+          time_index: ["2000-01-01"],
+          driver_values: [0.1],
+          lat: [-10],
+          lon: [120],
+          field_frames: [[[0.2]]],
+          coastline: { lat: [null], lon: [null] },
+        },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "map-stop-job",
+          status: "queued",
+          message: "Map job submitted.",
+        }),
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/map-stop-job/cancel", async (route) => {
+    cancelRequested = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job_id: "map-stop-job",
+        status: "cancelling",
+        progress: { current: 2, total: 10, description: "Cancelling" },
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/jobs/sdc-map/map-stop-job", async (route) => {
+    statusCalls += 1;
+    const body =
+      cancelRequested && statusCalls > 1
+        ? {
+            job_id: "map-stop-job",
+            status: "cancelled",
+            created_at: "2026-03-26T10:00:00Z",
+            started_at: "2026-03-26T10:00:01Z",
+            completed_at: "2026-03-26T10:00:03Z",
+            error: null,
+            progress: { current: 3, total: 10, description: "Cancelled" },
+          }
+        : {
+            job_id: "map-stop-job",
+            status: cancelRequested ? "cancelling" : "running",
+            created_at: "2026-03-26T10:00:00Z",
+            started_at: "2026-03-26T10:00:01Z",
+            completed_at: null,
+            error: null,
+            progress: {
+              current: cancelRequested ? 2 : 1,
+              total: 10,
+              description: cancelRequested ? "Cancelling" : "Computing event-conditioned SDC map",
+            },
+          };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /SDC Map/i }).click();
+  await page.locator("#map_load").click();
+  await expect(page.locator("#map_run")).toBeEnabled();
+
+  await page.locator("#map_run").click();
+  await expect(page.getByTestId("map-stop-button")).toBeVisible();
+  await expect(page.locator("#map_status")).toContainText("Running:", { timeout: 10_000 });
+
+  await page.getByTestId("map-stop-button").click();
+  await expect(page.getByTestId("map-stop-button")).toContainText("Stopping...");
+  await expect(page.locator("#map_status")).toContainText("Map run cancelled.", { timeout: 10_000 });
+  await expect(page.getByTestId("map-stop-button")).toBeHidden();
+  await expect(page.locator("#map_run")).toBeVisible();
+  await expect(page.locator("#map_download_pdf")).toBeDisabled();
 });
 
 test("custom NetCDF uploads expose extra-dimension selectors and submit the chosen value", async ({ page }) => {

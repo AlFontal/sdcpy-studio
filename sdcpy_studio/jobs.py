@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import RLock
+from threading import Event, RLock
 from uuid import uuid4
 
 import pandas as pd
 
 from sdcpy_studio.schemas import SDCJobRequest, SDCMapJobRequest
-from sdcpy_studio.service import run_sdc_job, run_sdc_map_job
+from sdcpy_studio.service import SDCMapJobCancelledError, run_sdc_job, run_sdc_map_job
 
 
 @dataclass
@@ -63,6 +63,7 @@ class JobManager:
         self._lock = RLock()
         self._jobs: dict[str, JobRecord] = {}
         self._futures: dict[str, Future] = {}
+        self._cancel_events: dict[str, Event] = {}
         self._datasets: dict[str, DatasetRecord] = {}
         self._map_uploads: dict[str, MapUploadRecord] = {}
         self._tmpdir = TemporaryDirectory(prefix="sdcpy-studio-")
@@ -74,12 +75,14 @@ class JobManager:
 
     def submit_map(self, request: SDCMapJobRequest) -> JobRecord:
         """Submit a new background computation for SDC map mode."""
-        return self._submit_with_runner(request, run_sdc_map_job)
+        return self._submit_with_runner(request, run_sdc_map_job, supports_cancel=True)
 
     def _submit_with_runner(
         self,
         request: SDCJobRequest | SDCMapJobRequest,
         runner,
+        *,
+        supports_cancel: bool = False,
     ) -> JobRecord:
         """Submit a new background computation."""
         job_id = uuid4().hex
@@ -94,23 +97,43 @@ class JobManager:
             progress_description="Queued",
         )
 
+        cancel_event = Event() if supports_cancel else None
+
         with self._lock:
             self._jobs[job_id] = record
-            record.status = "running"
-            record.started_at = datetime.now(timezone.utc)
-            if record.progress_description.lower() == "queued":
-                record.progress_description = "Starting job"
+            if cancel_event is not None:
+                self._cancel_events[job_id] = cancel_event
 
         def _progress_update(current: int, total: int, description: str) -> None:
             with self._lock:
                 rec = self._jobs.get(job_id)
                 if rec is None:
                     return
+                if rec.status == "cancelled":
+                    return
                 rec.progress_current = int(max(0, current))
                 rec.progress_total = int(max(1, total))
                 rec.progress_description = description
 
-        future = self._executor.submit(runner, request.model_dump(mode="python"), _progress_update)
+        def _run_job():
+            with self._lock:
+                rec = self._jobs.get(job_id)
+                if rec is None:
+                    raise RuntimeError("Submitted job record disappeared before execution.")
+                if cancel_event is not None and cancel_event.is_set():
+                    rec.status = "cancelled"
+                    rec.completed_at = datetime.now(timezone.utc)
+                    rec.progress_description = "Cancelled"
+                    raise SDCMapJobCancelledError("Map job cancelled before execution started.")
+                rec.status = "running"
+                rec.started_at = datetime.now(timezone.utc)
+                if rec.progress_description.lower() == "queued":
+                    rec.progress_description = "Starting job"
+            if cancel_event is not None:
+                return runner(request.model_dump(mode="python"), _progress_update, cancel_event)
+            return runner(request.model_dump(mode="python"), _progress_update)
+
+        future = self._executor.submit(_run_job)
 
         with self._lock:
             self._futures[job_id] = future
@@ -118,23 +141,61 @@ class JobManager:
         future.add_done_callback(lambda fut, jid=job_id: self._finalize(jid, fut))
         return record
 
+    def cancel_map(self, job_id: str) -> JobRecord | None:
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return None
+            if record.status in {"succeeded", "failed", "cancelled"}:
+                return record
+            cancel_event = self._cancel_events.get(job_id)
+            future = self._futures.get(job_id)
+            if cancel_event is None or future is None:
+                return record
+
+            cancel_event.set()
+            if future.cancel():
+                record.status = "cancelled"
+                record.completed_at = datetime.now(timezone.utc)
+                record.progress_description = "Cancelled"
+                return record
+
+            if record.status in {"queued", "running"}:
+                record.status = "cancelling"
+                record.progress_description = "Cancelling"
+            return record
+
     def _finalize(self, job_id: str, future: Future) -> None:
         with self._lock:
             record = self._jobs[job_id]
-            record.completed_at = datetime.now(timezone.utc)
             try:
+                if future.cancelled():
+                    record.status = "cancelled"
+                    record.error = None
+                    record.progress_description = "Cancelled"
+                    return
                 record.result = future.result()
                 record.status = "succeeded"
+                record.error = None
                 record.progress_current = record.progress_total
                 record.progress_description = "Completed"
+            except SDCMapJobCancelledError:
+                record.status = "cancelled"
+                record.error = None
+                record.progress_description = "Cancelled"
             except Exception as exc:  # pragma: no cover - exercised by API tests
                 record.status = "failed"
                 record.error = str(exc)
                 if not record.progress_description or record.progress_description.lower() in {
                     "queued",
                     "running",
+                    "cancelling",
                 }:
                     record.progress_description = "Failed"
+            finally:
+                record.completed_at = datetime.now(timezone.utc)
+                self._futures.pop(job_id, None)
+                self._cancel_events.pop(job_id, None)
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:

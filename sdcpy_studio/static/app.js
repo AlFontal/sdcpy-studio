@@ -86,14 +86,17 @@ const mapTimeStartInput = document.getElementById("map_time_start");
 const mapTimeEndInput = document.getElementById("map_time_end");
 const mapEventPreview = document.getElementById("map_event_preview");
 const mapEventPreviewChart = document.getElementById("map_event_preview_chart");
-const mapClearEventsButton = document.getElementById("map_clear_events");
+const mapClearAllEventsButton = document.getElementById("map_clear_all_events");
+const mapClearManualEventsButton = document.getElementById("map_clear_manual_events");
 const mapLatMinInput = document.getElementById("map_lat_min");
 const mapLatMaxInput = document.getElementById("map_lat_max");
 const mapLonMinInput = document.getElementById("map_lon_min");
 const mapLonMaxInput = document.getElementById("map_lon_max");
 const mapClearBoundsButton = document.getElementById("map_clear_bounds");
+const mapActionRow = document.querySelector(".map-action-row");
 const mapLoadButton = document.getElementById("map_load");
 const mapRunButton = document.getElementById("map_run");
+const mapStopButton = document.getElementById("map_stop");
 const mapStatusText = document.getElementById("map_status");
 const mapCacheNotice = document.getElementById("map_cache_notice");
 const mapBoundsNotice = document.getElementById("map_bounds_notice");
@@ -150,8 +153,10 @@ let mapActivePoll = null;
 let latestMapResult = null;
 let latestMapExplore = null;
 let latestMapJobId = null;
+let latestMapResultJobId = null;
 let mapRunStartedAt = 0;
 let mapRunBusy = false;
+let mapRunCancelling = false;
 let mapLoadBusy = false;
 let mapPhase = "idle";
 let mapSelectedTimeIndex = 0;
@@ -816,7 +821,7 @@ function setDownloadButtons(enabled) {
 
 function setMapDownloadButtons(enabled) {
   mapDownloadsEnabled = !!enabled;
-  const isReady = mapDownloadsEnabled && !!latestMapJobId;
+  const isReady = mapDownloadsEnabled && !!latestMapResultJobId;
   if (mapDownloadNcButton) {
     mapDownloadNcButton.disabled = !isReady;
   }
@@ -909,31 +914,41 @@ function setMapPhase(nextPhase) {
 }
 
 function refreshMapRunButtonState() {
-  if (!mapRunButton) {
-    return;
+  const showStop = mapRunBusy || mapRunCancelling;
+  const canRun = !!latestMapExplore && !mapLoadBusy && !mapRunBusy && !mapRunCancelling;
+
+  if (mapActionRow) {
+    mapActionRow.dataset.state = mapRunCancelling ? "cancelling" : showStop ? "running" : "idle";
   }
-  const canRun = !!latestMapExplore && !mapLoadBusy && !mapRunBusy;
-  mapRunButton.disabled = !canRun;
+  if (mapLoadButton) {
+    mapLoadButton.hidden = showStop;
+    mapLoadButton.disabled = mapLoadBusy || mapRunBusy || mapRunCancelling;
+    mapLoadButton.textContent = mapLoadBusy ? "Loading datasets..." : "Load driver + dataset";
+  }
+  if (mapRunButton) {
+    mapRunButton.hidden = showStop;
+    mapRunButton.disabled = !canRun;
+    mapRunButton.textContent = mapRunBusy ? "Running SDC map..." : "Run SDC map";
+  }
+  if (mapStopButton) {
+    mapStopButton.hidden = !showStop;
+    mapStopButton.disabled = !latestMapJobId || mapRunCancelling;
+    mapStopButton.textContent = mapRunCancelling ? "Stopping..." : "Stop current run";
+  }
 }
 
 function setMapLoadBusy(isBusy) {
   mapLoadBusy = !!isBusy;
-  if (mapLoadButton) {
-    mapLoadButton.disabled = mapLoadBusy || mapRunBusy;
-    mapLoadButton.textContent = mapLoadBusy ? "Loading datasets..." : "Load driver + dataset";
-  }
   refreshMapRunButtonState();
 }
 
 function setMapRunBusy(isBusy) {
   mapRunBusy = !!isBusy;
-  if (!mapRunButton) {
-    return;
-  }
-  mapRunButton.textContent = mapRunBusy ? "Running SDC map..." : "Run SDC map";
-  if (mapLoadButton) {
-    mapLoadButton.disabled = mapLoadBusy || mapRunBusy;
-  }
+  refreshMapRunButtonState();
+}
+
+function setMapRunCancelling(isCancelling) {
+  mapRunCancelling = !!isCancelling;
   refreshMapRunButtonState();
 }
 
@@ -1294,6 +1309,40 @@ function clearMapManualEventSelection() {
 function resetMapManualEventSelection() {
   clearMapManualEventSelection();
   mapFocusedDriverEventKey = "";
+}
+
+function setMapManualEventSelection(selection) {
+  mapManualEventSelection = normalizeMapManualEventSelection(selection);
+  mapFocusedDriverEventKey = "";
+}
+
+function hasMapManualEventSelectionOverride() {
+  return Boolean(mapManualEventSelection);
+}
+
+function hasEffectiveMapManualSelection(catalog = getMapCurrentPreviewCatalog()) {
+  if (hasMapManualEventSelectionOverride()) {
+    return true;
+  }
+  return String(catalog?.selection_mode || "")
+    .trim()
+    .toLowerCase() === "manual";
+}
+
+function countSelectedMapEvents(catalog = getMapCurrentPreviewCatalog()) {
+  const selectedPositive = Array.isArray(catalog?.selected_positive) ? catalog.selected_positive.length : 0;
+  const selectedNegative = Array.isArray(catalog?.selected_negative) ? catalog.selected_negative.length : 0;
+  return selectedPositive + selectedNegative;
+}
+
+function syncMapPreviewActionState(catalog = getMapCurrentPreviewCatalog()) {
+  const hasManualSelection = hasEffectiveMapManualSelection(catalog);
+  if (mapClearAllEventsButton) {
+    mapClearAllEventsButton.disabled = countSelectedMapEvents(catalog) === 0 && !hasManualSelection;
+  }
+  if (mapClearManualEventsButton) {
+    mapClearManualEventsButton.disabled = !hasManualSelection;
+  }
 }
 
 function getMapCurrentPreviewCatalog() {
@@ -1797,6 +1846,7 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
   if (!mapEventPreview) {
     return;
   }
+  syncMapPreviewActionState(catalog || {});
   mapEventPreviewContextLabel = contextLabel;
   const eventCatalog = catalog || {};
   const correlationWidth = Math.max(
@@ -1807,26 +1857,18 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
   const positive = eventGroups.selectedPositive;
   const negative = eventGroups.selectedNegative;
   const warnings = Array.isArray(eventCatalog.warnings) ? eventCatalog.warnings : [];
-  const selectionMode = String(eventCatalog.selection_mode || "auto").trim().toLowerCase();
+  const selectionMode = hasEffectiveMapManualSelection(eventCatalog)
+    ? "manual"
+    : String(eventCatalog.selection_mode || "auto").trim().toLowerCase();
   const betaThreshold = Number(eventCatalog.base_state_threshold);
   const thresholdLabel = Number.isFinite(betaThreshold) ? betaThreshold.toFixed(3) : "Not available";
   const baseStateCount = Number.isFinite(Number(eventCatalog.base_state_count))
     ? Number(eventCatalog.base_state_count).toLocaleString()
     : "0";
-  const timeStepInfo = getMapTimeStepInfo(latestMapResult?.summary, latestMapDriverPreview?.time_index || latestMapExplore?.time_index || []);
-  const focusedEvent = resolveFocusedMapDriverEvent(eventCatalog, correlationWidth);
-  const focusSummary = focusedEvent
-    ? `${toSentenceCase(focusedEvent.status)} ${focusedEvent.sign} event on ${focusedEvent.date} ` +
-      `(${Number.isFinite(focusedEvent.value) ? focusedEvent.value.toFixed(3) : "NA"}). ` +
-      `Window: ${focusedEvent.windowStart || "NA"} to ${focusedEvent.windowEnd || "NA"} (r_w=${correlationWidth} ${timeStepInfo.plural}).`
-    : `No selected event is available for preview in the current ${timeStepInfo.singular} window.`;
 
   mapEventPreview.innerHTML = [
     `<p><strong>${escapeHtml(toSentenceCase(contextLabel))} preview</strong></p>`,
     `<p class="hint"><strong>Selection mode:</strong> ${escapeHtml(selectionMode)}</p>`,
-    `<p class="map-event-focus${focusedEvent ? " is-active" : ""}"><strong>Preview event:</strong> ${escapeHtml(
-      focusSummary
-    )}</p>`,
     `<p><strong>Positive events (N+):</strong> ${escapeHtml(formatDriverEventList(positive))}</p>`,
     `<p><strong>Negative events (N-):</strong> ${escapeHtml(formatDriverEventList(negative))}</p>`,
     `<p><strong>Base-state threshold:</strong> ${escapeHtml(thresholdLabel)} · <strong>Base-state samples:</strong> ${escapeHtml(baseStateCount)}</p>`,
@@ -2129,6 +2171,7 @@ async function refreshMapDriverPreview({ immediate = false } = {}) {
   if (!config) {
     latestMapDriverPreview = null;
     clearTimeout(mapDriverPreviewDebounceTimer);
+    syncMapPreviewActionState({});
     clearMapEventPreviewChart("Select or upload a driver to preview events.");
     return;
   }
@@ -2733,6 +2776,8 @@ function updateMapProgress(progress, status) {
     percent = 100;
   } else if (normalizedStatus === "failed") {
     percent = (current / total) * 100;
+  } else if (normalizedStatus === "cancelled" || normalizedStatus === "cancelling") {
+    percent = (current / total) * 100;
   } else if (normalizedStatus === "running") {
     percent = (current / total) * 100;
   }
@@ -2743,6 +2788,10 @@ function updateMapProgress(progress, status) {
     label = "Queued";
   } else if (normalizedStatus === "running") {
     label = `${stepLabel}: ${stageLabel}`;
+  } else if (normalizedStatus === "cancelling") {
+    label = stageLabel && stageLabel.toLowerCase() !== "cancelling" ? `Stopping: ${stageLabel}` : "Stopping";
+  } else if (normalizedStatus === "cancelled") {
+    label = "Cancelled";
   } else if (normalizedStatus === "succeeded") {
     label = "Completed";
   } else if (normalizedStatus === "failed") {
@@ -2754,6 +2803,14 @@ function updateMapProgress(progress, status) {
   let etaText = "Expected runtime: up to a few minutes.";
   if (normalizedStatus === "queued") {
     etaText = "Queued. Waiting for worker to pick up the job.";
+  } else if (normalizedStatus === "cancelling") {
+    etaText = elapsedSeconds
+      ? `Elapsed: ${formatDurationSeconds(elapsedSeconds)}. Stopping the map run...`
+      : "Stopping the map run...";
+  } else if (normalizedStatus === "cancelled") {
+    etaText = elapsedSeconds
+      ? `Cancelled after ${formatDurationSeconds(elapsedSeconds)}.`
+      : "Map run cancelled.";
   } else if (normalizedStatus === "succeeded") {
     etaText = `Completed in ${formatDurationSeconds(elapsedSeconds)}.`;
   } else if (normalizedStatus === "failed") {
@@ -4884,11 +4941,11 @@ function triggerDownload(fmt) {
 }
 
 function triggerMapDownload(fmt) {
-  if (latestMapJobId && (fmt === "png" || fmt === "pdf" || fmt === "nc")) {
+  if (latestMapResultJobId && (fmt === "png" || fmt === "pdf" || fmt === "nc")) {
     const url =
       fmt === "png" || fmt === "pdf"
-        ? `/api/v1/jobs/sdc-map/${latestMapJobId}/download/${fmt}?sign=${encodeURIComponent(mapActiveClass)}`
-        : `/api/v1/jobs/sdc-map/${latestMapJobId}/download/${fmt}`;
+        ? `/api/v1/jobs/sdc-map/${latestMapResultJobId}/download/${fmt}?sign=${encodeURIComponent(mapActiveClass)}`
+        : `/api/v1/jobs/sdc-map/${latestMapResultJobId}/download/${fmt}`;
     window.open(url, "_blank");
   }
 }
@@ -5786,7 +5843,7 @@ async function fetchMapResult(jobId) {
   const result = payload.result;
   latestMapResult = result;
   syncMapManualSelectionFromCatalog(result.event_catalog || {});
-  latestMapJobId = jobId;
+  latestMapResultJobId = jobId;
   const positiveCount = Number(result?.class_results?.positive?.summary?.selected_event_count || 0);
   const negativeCount = Number(result?.class_results?.negative?.summary?.selected_event_count || 0);
   mapActiveClass = positiveCount > 0 || negativeCount === 0 ? "positive" : "negative";
@@ -5824,14 +5881,16 @@ async function fetchMapResult(jobId) {
 }
 
 async function submitMapExplore() {
-  if (mapLoadBusy || mapRunBusy) {
+  if (mapLoadBusy || mapRunBusy || mapRunCancelling) {
     return;
   }
   stopMapTimePlayback();
   setWorkflowTab("map");
   setMapLoadBusy(true);
+  setMapRunCancelling(false);
   mapDownloadsEnabled = false;
   latestMapJobId = null;
+  latestMapResultJobId = null;
   latestMapResult = null;
   resetMapPlotCanvas();
   setMapDownloadButtons(false);
@@ -5939,6 +5998,7 @@ async function pollMapJob(jobId) {
   latestMapJobId = jobId;
   mapRunStartedAt = Date.now();
   setMapRunBusy(true);
+  setMapRunCancelling(false);
   updateMapProgress({ current: 0, total: 1, description: "Queued" }, "queued");
   setMapStatus("Submitting map job...");
 
@@ -5952,42 +6012,88 @@ async function pollMapJob(jobId) {
       const status = await response.json();
       updateMapProgress(status.progress || {}, status.status);
       if (status.status === "queued" || status.status === "running") {
+        setMapRunCancelling(false);
         const progress = status.progress || {};
         const description = progress.description ? String(progress.description) : "Running";
         setMapStatus(`Running: ${description}`);
+      } else if (status.status === "cancelling") {
+        setMapRunCancelling(true);
+        setMapStatus("Stopping map run...");
       }
 
       if (status.status === "succeeded") {
         clearInterval(mapActivePoll);
         mapActivePoll = null;
         await fetchMapResult(jobId);
+        latestMapJobId = null;
         updateMapProgress(
           status.progress || { current: 1, total: 1, description: "Completed" },
           "succeeded"
         );
         setMapRunBusy(false);
+        setMapRunCancelling(false);
+      } else if (status.status === "cancelled") {
+        clearInterval(mapActivePoll);
+        mapActivePoll = null;
+        latestMapJobId = null;
+        updateMapProgress(
+          status.progress || { current: 0, total: 1, description: "Cancelled" },
+          "cancelled"
+        );
+        setMapRunBusy(false);
+        setMapRunCancelling(false);
+        if (latestMapResult && latestMapResultJobId) {
+          mapDownloadsEnabled = true;
+          setMapDownloadButtons(true);
+          setMapStatus("Map run cancelled. Showing the previous completed result.");
+        } else {
+          mapDownloadsEnabled = false;
+          setMapDownloadButtons(false);
+          setMapStatus("Map run cancelled.");
+        }
       } else if (status.status === "failed") {
         clearInterval(mapActivePoll);
         mapActivePoll = null;
+        latestMapJobId = null;
         updateMapProgress(
           status.progress || { current: 0, total: 1, description: "Failed" },
           "failed"
         );
         setMapStatus(status.error || "Map job failed.", true);
         setMapRunBusy(false);
+        setMapRunCancelling(false);
       }
     } catch (error) {
       clearInterval(mapActivePoll);
       mapActivePoll = null;
+      latestMapJobId = null;
       updateMapProgress({ current: 0, total: 1, description: "Failed" }, "failed");
       setMapStatus(String(error), true);
       setMapRunBusy(false);
+      setMapRunCancelling(false);
     }
   }, 700);
 }
 
+async function cancelMapJob() {
+  if (!latestMapJobId || mapRunCancelling) {
+    return;
+  }
+  setMapRunCancelling(true);
+  setMapStatus("Stopping map run...");
+  const response = await fetch(`/api/v1/jobs/sdc-map/${latestMapJobId}/cancel`, {
+    method: "POST",
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    setMapRunCancelling(false);
+    throw new Error(data.detail || "Unable to stop the map run.");
+  }
+  updateMapProgress(data.progress || { current: 0, total: 1, description: "Cancelling" }, data.status);
+}
+
 async function submitMapJob() {
-  if (mapRunBusy || mapLoadBusy) {
+  if (mapRunBusy || mapLoadBusy || mapRunCancelling) {
     return;
   }
   if (!latestMapExplore) {
@@ -5995,6 +6101,7 @@ async function submitMapJob() {
   }
   stopMapTimePlayback();
   setWorkflowTab("map");
+  setMapRunCancelling(false);
   const config = getMapConfig();
   const response = await fetch("/api/v1/jobs/sdc-map", {
     method: "POST",
@@ -6245,9 +6352,32 @@ function attachHandlers() {
   if (mapDownloadPdfButton) {
     mapDownloadPdfButton.addEventListener("click", () => triggerMapDownload("pdf"));
   }
-  if (mapClearEventsButton) {
-    mapClearEventsButton.addEventListener("click", async () => {
+  if (mapClearAllEventsButton) {
+    mapClearAllEventsButton.addEventListener("click", async () => {
+      setMapManualEventSelection({
+        selected_positive_dates: [],
+        selected_negative_dates: [],
+      });
+      syncMapPreviewActionState({
+        selected_positive: [],
+        selected_negative: [],
+        selection_mode: "manual",
+      });
+      invalidateMapPreparation();
+      await refreshMapDriverPreview({ immediate: true });
+    });
+  }
+  if (mapClearManualEventsButton) {
+    mapClearManualEventsButton.addEventListener("click", async () => {
+      if (!hasEffectiveMapManualSelection()) {
+        return;
+      }
       resetMapManualEventSelection();
+      syncMapPreviewActionState({
+        selected_positive: [],
+        selected_negative: [],
+        selection_mode: "auto",
+      });
       invalidateMapPreparation();
       await refreshMapDriverPreview({ immediate: true });
     });
@@ -6268,6 +6398,15 @@ function attachHandlers() {
     mapRunButton.addEventListener("click", async () => {
       try {
         await submitMapJob();
+      } catch (error) {
+        setMapStatus(String(error), true);
+      }
+    });
+  }
+  if (mapStopButton) {
+    mapStopButton.addEventListener("click", async () => {
+      try {
+        await cancelMapJob();
       } catch (error) {
         setMapStatus(String(error), true);
       }

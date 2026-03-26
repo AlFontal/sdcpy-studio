@@ -524,43 +524,58 @@
                     Loading field metadata...
                   </div>
                 </div>
-                <div class="map-controls-grid map-controls-grid-secondary">
-                  <label>Min lag
-                    <input id="map_min_lag" type="number" value="-6" />
-                  </label>
-                  <label>Max lag
-                    <input id="map_max_lag" type="number" value="6" />
-                  </label>
-                  <label>Time start
-                    <input id="map_time_start" type="date" value="" />
-                  </label>
-                  <label>Time end
-                    <input id="map_time_end" type="date" value="" />
-                  </label>
-                </div>
                 <section class="map-event-preview-panel" aria-label="Detected driver events">
                   <div class="map-event-preview-header">
-                    <p class="map-meta-title">Detected driver events</p>
-                    <span class="map-select-meta">Auto-detected preview from the current driver window.</span>
+                    <div class="map-event-preview-titleblock">
+                      <p class="map-meta-title">SDC map parameters</p>
+                    </div>
                   </div>
-                  <div class="map-preview-controls" data-testid="map-preview-controls">
-                    <label>Positive events (N+)
+                  <div class="map-preview-controls map-parameter-grid" data-testid="map-preview-controls">
+                    <label class="map-compact-field"><span class="map-compact-label">Min lag</span>
+                      <input id="map_min_lag" type="number" value="-6" />
+                    </label>
+                    <label class="map-compact-field"><span class="map-compact-label">Max lag</span>
+                      <input id="map_max_lag" type="number" value="6" />
+                    </label>
+                    <label class="map-compact-field"><span class="map-compact-label">Time start</span>
+                      <input id="map_time_start" type="date" value="" />
+                    </label>
+                    <label class="map-compact-field"><span class="map-compact-label">Time end</span>
+                      <input id="map_time_end" type="date" value="" />
+                    </label>
+                    <label class="map-compact-field"><span class="map-compact-label">Positive events (N+)</span>
                       <input id="map_n_positive_peaks" type="number" min="0" max="24" value="3" />
                     </label>
-                    <label>Negative events (N-)
+                    <label class="map-compact-field"><span class="map-compact-label">Negative events (N-)</span>
                       <input id="map_n_negative_peaks" type="number" min="0" max="24" value="3" />
                     </label>
-                    <label>Base-state beta
+                    <label class="map-compact-field"><span class="map-compact-label">Base-state beta</span>
                       <input id="map_base_state_beta" type="number" min="0.05" max="2" step="0.05" value="0.5" />
                     </label>
-                    <label>Permutations
+                    <label class="map-compact-field"><span class="map-compact-label">Permutations</span>
                       <input id="map_n_permutations" type="number" min="1" max="999" value="49" />
                     </label>
                   </div>
                   <div class="map-preview-actions">
-                    <button id="map_clear_events" class="btn secondary" type="button" data-testid="map-clear-events-button">
-                      Clear selected events
-                    </button>
+                    <div class="map-preview-action-buttons">
+                      <button
+                        id="map_clear_all_events"
+                        class="btn secondary map-preview-action-button"
+                        type="button"
+                        data-testid="map-clear-all-events-button"
+                      >
+                        Clear all events
+                      </button>
+                      <button
+                        id="map_clear_manual_events"
+                        class="btn secondary map-preview-action-button"
+                        type="button"
+                        data-testid="map-clear-manual-events-button"
+                        disabled
+                      >
+                        Clear manual events
+                      </button>
+                    </div>
                     <p class="hint" id="map_preview_hint" data-testid="map-preview-instructions">
                       Click the chart to add events or remove selected ones.
                     </p>
@@ -573,6 +588,7 @@
                 <div class="map-action-row">
                   <button id="map_load" class="btn secondary" type="button">Load driver + dataset</button>
                   <button id="map_run" class="btn" type="button" disabled>Run SDC map</button>
+                  <button id="map_stop" class="btn secondary" type="button" data-testid="map-stop-button" hidden disabled>Stop current run</button>
                 </div>
                 <details class="map-manual-bounds">
                   <summary>Manual bounds (optional)</summary>

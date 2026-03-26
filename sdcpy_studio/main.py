@@ -245,6 +245,13 @@ def create_app(
             message="Map job submitted. Poll /api/v1/jobs/sdc-map/{job_id} for completion.",
         )
 
+    @app.post("/api/v1/jobs/sdc-map/{job_id}/cancel", response_model=JobStatusResponse)
+    async def cancel_sdc_map_job(job_id: str) -> JobStatusResponse:
+        job = app.state.job_manager.cancel_map(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+        return _job_status_payload(job)
+
     @app.post("/api/v1/sdc-map/explore", response_model=SDCMapExploreResponse)
     async def explore_sdc_map(payload: SDCMapJobRequest) -> SDCMapExploreResponse:
         payload = _hydrate_map_upload_request(payload)
@@ -320,6 +327,8 @@ def create_app(
         job = app.state.job_manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Job was cancelled.")
         if job.status == "failed":
             raise HTTPException(status_code=422, detail=job.error or "Job failed.")
         if job.status != "succeeded" or job.result is None:
@@ -339,6 +348,8 @@ def create_app(
         job = app.state.job_manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Map job was cancelled.")
         if job.status == "failed":
             raise HTTPException(status_code=422, detail=job.error or "Job failed.")
         if job.status != "succeeded" or job.result is None:
@@ -351,6 +362,8 @@ def create_app(
         job = app.state.job_manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Job was cancelled.")
         if job.status == "failed":
             raise HTTPException(status_code=422, detail=job.error or "Job failed.")
         if job.status != "succeeded" or job.result is None:
@@ -372,6 +385,8 @@ def create_app(
         job = app.state.job_manager.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found.")
+        if job.status == "cancelled":
+            raise HTTPException(status_code=409, detail="Map job was cancelled.")
         if job.status == "failed":
             raise HTTPException(status_code=422, detail=job.error or "Job failed.")
         if job.status != "succeeded" or job.result is None:

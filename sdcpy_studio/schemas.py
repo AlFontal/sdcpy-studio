@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 MIN_SERIES_LENGTH = 20
+JobStatusLiteral = Literal["queued", "running", "cancelling", "cancelled", "succeeded", "failed"]
 
 
 class SDCJobRequest(BaseModel):
@@ -158,7 +159,7 @@ class JobSubmissionResponse(BaseModel):
     """Response returned immediately after creating a job."""
 
     job_id: str
-    status: Literal["queued", "running", "succeeded", "failed"]
+    status: JobStatusLiteral
     message: str
 
 
@@ -174,7 +175,7 @@ class JobStatusResponse(BaseModel):
     """Current state of an asynchronous job."""
 
     job_id: str
-    status: Literal["queued", "running", "succeeded", "failed"]
+    status: JobStatusLiteral
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

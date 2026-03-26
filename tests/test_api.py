@@ -150,6 +150,16 @@ class InlineJobManager:
     def get(self, job_id: str):
         return self.jobs.get(job_id)
 
+    def cancel_map(self, job_id: str):
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        if job.status not in {"succeeded", "failed", "cancelled"}:
+            job.status = "cancelled"
+            job.progress_description = "Cancelled"
+            job.completed_at = datetime.now(timezone.utc)
+        return job
+
     def register_dataset(self, dataframe, filename: str):
         dataset_id = uuid4().hex
         record = type("Dataset", (), {})()
@@ -717,6 +727,104 @@ def test_map_job_endpoints():
     assert nc.status_code == 200
     assert nc.headers["content-type"] == "application/x-netcdf"
     assert nc.content[:3] == b"CDF"
+
+
+def test_map_job_cancel_endpoint_for_queued_job():
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+
+    submit = client.post(
+        "/api/v1/jobs/sdc-map",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 3,
+            "n_negative_peaks": 3,
+            "base_state_beta": 0.5,
+        },
+    )
+    assert submit.status_code == 200
+    job_id = submit.json()["job_id"]
+
+    cancel = client.post(f"/api/v1/jobs/sdc-map/{job_id}/cancel")
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "succeeded"
+
+
+def test_map_job_cancel_endpoint_reports_running_to_cancelled_transition():
+    class CancellableMapJobManager(InlineJobManager):
+        def __init__(self):
+            super().__init__()
+            self._cancelled_once = False
+
+        def submit_map(self, request):
+            job_id = uuid4().hex
+            now = datetime.now(timezone.utc)
+            job = type("Job", (), {})()
+            job.job_id = job_id
+            job.status = "running"
+            job.created_at = now
+            job.started_at = now
+            job.completed_at = None
+            job.error = None
+            job.progress_current = 2
+            job.progress_total = 10
+            job.progress_description = "Computing event-conditioned SDC map"
+            job.result = None
+            self.jobs[job_id] = job
+            return job
+
+        def cancel_map(self, job_id: str):
+            job = self.jobs.get(job_id)
+            if job is None:
+                return None
+            job.status = "cancelling"
+            job.progress_description = "Cancelling"
+            return job
+
+        def get(self, job_id: str):
+            job = self.jobs.get(job_id)
+            if job and job.status == "cancelling" and not self._cancelled_once:
+                self._cancelled_once = True
+                return job
+            if job and job.status == "cancelling":
+                job.status = "cancelled"
+                job.progress_description = "Cancelled"
+                job.completed_at = datetime.now(timezone.utc)
+            return job
+
+    app = create_app(job_manager=CancellableMapJobManager())
+    client = TestClient(app)
+
+    submit = client.post(
+        "/api/v1/jobs/sdc-map",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 3,
+            "n_negative_peaks": 3,
+            "base_state_beta": 0.5,
+        },
+    )
+    job_id = submit.json()["job_id"]
+
+    cancel = client.post(f"/api/v1/jobs/sdc-map/{job_id}/cancel")
+    assert cancel.status_code == 200
+    assert cancel.json()["status"] == "cancelling"
+
+    status = client.get(f"/api/v1/jobs/sdc-map/{job_id}")
+    assert status.status_code == 200
+    assert status.json()["status"] == "cancelling"
+
+    status = client.get(f"/api/v1/jobs/sdc-map/{job_id}")
+    assert status.status_code == 200
+    assert status.json()["status"] == "cancelled"
+
+    result = client.get(f"/api/v1/jobs/sdc-map/{job_id}/result")
+    assert result.status_code == 409
+    assert "cancelled" in result.json()["detail"].lower()
 
 
 def test_map_custom_upload_inspection_endpoints():
@@ -1433,10 +1541,65 @@ def test_map_driver_preview_endpoint_accepts_zero_seed_counts(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["result"]["event_catalog"]["selected_positive"] == []
-    assert response.json()["result"]["event_catalog"]["selected_negative"] == []
-    assert captured["payload"]["n_positive_peaks"] == 0
-    assert captured["payload"]["n_negative_peaks"] == 0
+
+
+def test_map_driver_preview_endpoint_preserves_manual_empty_selection(monkeypatch):
+    app = create_app(job_manager=InlineJobManager())
+    client = TestClient(app)
+    captured = {}
+
+    def fake_preview(payload):
+        captured["payload"] = payload
+        return {
+            "summary": {
+                "driver_dataset": payload["driver_dataset"],
+                "time_start": "2000-01-01",
+                "time_end": "2001-12-01",
+                "correlation_width": 12,
+                "n_positive_peaks": 3,
+                "n_negative_peaks": 3,
+                "base_state_beta": 0.5,
+                "n_points": 24,
+            },
+            "event_catalog": {
+                "selected_positive": [],
+                "selected_negative": [],
+                "ignored_positive": [],
+                "ignored_negative": [],
+                "base_state_threshold": None,
+                "base_state_count": 24,
+                "warnings": [],
+                "selection_mode": "manual",
+            },
+            "time_index": ["2000-01-01", "2000-02-01"],
+            "driver_values": [0.1, 0.3],
+        }
+
+    monkeypatch.setattr("sdcpy_studio.main.build_sdc_map_driver_preview", fake_preview)
+
+    response = client.post(
+        "/api/v1/sdc-map/driver/preview",
+        json={
+            "driver_dataset": "pdo",
+            "field_dataset": "ncep_air",
+            "correlation_width": 12,
+            "n_positive_peaks": 3,
+            "n_negative_peaks": 3,
+            "base_state_beta": 0.5,
+            "manual_event_selection": {
+                "selected_positive_dates": [],
+                "selected_negative_dates": [],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["event_catalog"]["selection_mode"] == "manual"
+    assert payload["result"]["event_catalog"]["selected_positive"] == []
+    assert payload["result"]["event_catalog"]["selected_negative"] == []
+    assert captured["payload"]["manual_event_selection"]["selected_positive_dates"] == []
+    assert captured["payload"]["manual_event_selection"]["selected_negative_dates"] == []
 
 
 def test_map_explore_endpoint_rejects_empty_event_selection(monkeypatch):

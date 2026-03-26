@@ -11,7 +11,7 @@ from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from time import perf_counter
 from urllib.parse import urlparse
 
@@ -134,6 +134,15 @@ _MAP_LAYER_DEFS: tuple[dict[str, object], ...] = (
         "zmax": None,
     },
 )
+
+
+class SDCMapJobCancelledError(RuntimeError):
+    """Raised when a running SDC map job is cancelled cooperatively."""
+
+
+def _raise_if_cancelled(cancel_event: Event | None, description: str = "SDC map job cancelled.") -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise SDCMapJobCancelledError(description)
 
 
 def _sanitize_filename_token(value: str, fallback: str) -> str:
@@ -2625,6 +2634,7 @@ def _compute_sdcmap_event_layers_with_progress(
     config,
     manual_event_selection: dict[str, object] | None,
     progress_hook: Callable[[int, int, str], None] | None,
+    cancel_event: Event | None,
     progress_base_current: int,
     progress_total: int,
 ) -> tuple[dict[str, object], int]:
@@ -2635,6 +2645,7 @@ def _compute_sdcmap_event_layers_with_progress(
     total_cells = max(0, nlat * nlon)
 
     def _cell_progress(completed_cells: int, expected_total_cells: int) -> None:
+        _raise_if_cancelled(cancel_event, "SDC map run cancelled during cell computation.")
         if expected_total_cells <= 0:
             return
         current = min(progress_total - 3, progress_base_current + int(completed_cells))
@@ -2651,6 +2662,7 @@ def _compute_sdcmap_event_layers_with_progress(
         progress_total,
         f"Computing event-conditioned SDC map ({total_cells} cells)",
     )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before cell computation started.")
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         result = compute_sdcmap_event_layers(
             driver=driver,
@@ -2666,6 +2678,7 @@ def _compute_sdcmap_event_layers_with_progress(
         progress_total,
         "Event-conditioned map layers computed",
     )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled after cell computation.")
     return result, total_cells
 
 
@@ -2854,6 +2867,7 @@ def build_sdc_map_exploration(payload: dict) -> dict:
 def run_sdc_map_job(
     payload: dict,
     progress_hook: Callable[[int, int, str], None] | None = None,
+    cancel_event: Event | None = None,
 ) -> dict:
     """Run an event-conditioned SDC map job and return a JSON-friendly payload."""
     os.environ.setdefault("TQDM_DISABLE", "1")
@@ -2883,6 +2897,7 @@ def run_sdc_map_job(
 
     initial_progress_total = 8
     _emit_progress(progress_hook, 0, initial_progress_total, "Preparing SDC map inputs")
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before preparation.")
     data_dir = _resolve_map_cache_dir()
     lat_min, lat_max, lon_min, lon_max, using_full_bounds = _resolve_map_bounds(
         request,
@@ -2896,6 +2911,7 @@ def run_sdc_map_job(
         initial_progress_total,
         f"Ensuring map assets ({request.driver_dataset} / {request.field_dataset})",
     )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before asset resolution.")
     paths = _resolve_map_paths_for_request(
         request,
         data_dir=data_dir,
@@ -2903,6 +2919,7 @@ def run_sdc_map_job(
         progress_start=1,
         progress_total=initial_progress_total,
     )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled after asset resolution.")
 
     if _is_catalog_driver(request):
         full_driver = load_driver_series(
@@ -2940,6 +2957,7 @@ def run_sdc_map_job(
     )
 
     _emit_progress(progress_hook, 4, initial_progress_total, "Loading and aligning series")
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before loading datasets.")
     if _is_catalog_driver(request):
         driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
     else:
@@ -2961,7 +2979,9 @@ def run_sdc_map_job(
             config=config,
             dimension_selections=request.field_dimension_selections,
         )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled during dataset loading.")
     driver = align_driver_to_field(driver, mapped_field)
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled during series alignment.")
     lats, lons = grid_coordinates(mapped_field)
     time_step_info = _infer_time_step_info(mapped_field["time"].values)
     manual_event_selection = (
@@ -2990,9 +3010,11 @@ def run_sdc_map_job(
         config=config,
         manual_event_selection=manual_event_selection,
         progress_hook=progress_hook,
+        cancel_event=cancel_event,
         progress_base_current=4,
         progress_total=progress_total,
     )
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled after cell computation.")
     coastline = load_coastline(paths["coastline"])
     compact_layers = derive_compact_layers(event_result)
     public_catalog = _public_event_catalog(event_result.get("event_catalog"))
@@ -3008,6 +3030,7 @@ def run_sdc_map_job(
     )
 
     _emit_progress(progress_hook, progress_total - 2, progress_total, "Rendering event-class figures")
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before figure rendering.")
     positive_static_png = _render_map_class_static_png(
         sign_label="Positive",
         layers=event_result["positive"]["layers"],
@@ -3085,6 +3108,7 @@ def run_sdc_map_job(
     png_bytes = combined_report_png
 
     _emit_progress(progress_hook, progress_total - 1, progress_total, "Packing outputs")
+    _raise_if_cancelled(cancel_event, "SDC map run cancelled before packing outputs.")
     nc_bytes = _build_event_map_netcdf_bytes(
         class_results={
             "positive": dict(event_result["positive"]),
