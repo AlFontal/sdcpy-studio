@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -80,8 +81,12 @@ class InlineJobManager:
                 "valid_cells": 12,
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2010-01-01", "value": 1.2, "sign": "positive", "source": "auto"}],
-                "selected_negative": [{"date": "2010-07-01", "value": -1.1, "sign": "negative", "source": "auto"}],
+                "selected_positive": [
+                    {"date": "2010-01-01", "value": 1.2, "sign": "positive", "source": "auto"}
+                ],
+                "selected_negative": [
+                    {"date": "2010-07-01", "value": -1.1, "sign": "negative", "source": "auto"}
+                ],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.55,
@@ -91,7 +96,11 @@ class InlineJobManager:
             },
             "class_results": {
                 "positive": {
-                    "summary": {"selected_event_count": 1, "valid_cells": 12, "lag_valid_cells": [12]},
+                    "summary": {
+                        "selected_event_count": 1,
+                        "valid_cells": 12,
+                        "lag_valid_cells": [12],
+                    },
                     "layer_maps": {
                         "lat": [0.0],
                         "lon": [0.0],
@@ -109,7 +118,11 @@ class InlineJobManager:
                     "empty_reason": None,
                 },
                 "negative": {
-                    "summary": {"selected_event_count": 1, "valid_cells": 9, "lag_valid_cells": [9]},
+                    "summary": {
+                        "selected_event_count": 1,
+                        "valid_cells": 9,
+                        "lag_valid_cells": [9],
+                    },
                     "layer_maps": {
                         "lat": [0.0],
                         "lon": [0.0],
@@ -130,7 +143,7 @@ class InlineJobManager:
             "notes": [],
             "runtime_seconds": 0.12,
             "figure_png_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-            "download_formats": ["png", "pdf", "nc"],
+            "download_formats": ["png", "pdf", "nc", "zip"],
             "_artifacts_map": {
                 "png": b"\x89PNG\r\n\x1a\nBOTH",
                 "png_positive": b"\x89PNG\r\n\x1a\nPOS",
@@ -220,9 +233,7 @@ def _custom_map_driver_csv(n: int = 72) -> str:
     for i in range(n):
         year = 2000 + (i // 12)
         month = (i % 12) + 1
-        rows.append(
-            f"{year}-{month:02d}-01,{np.sin(i / 5):.6f},{np.cos(i / 7):.6f}"
-        )
+        rows.append(f"{year}-{month:02d}-01,{np.sin(i / 5):.6f},{np.cos(i / 7):.6f}")
     return "\n".join(rows)
 
 
@@ -230,9 +241,7 @@ def _custom_map_driver_three_series_month_end_csv(n: int = 12, start: str = "200
     rows = ["date,E+C,nino34+EMI,nino34+TNI"]
     dates = pd.date_range(start, periods=n, freq="ME")
     for i, ts in enumerate(dates):
-        rows.append(
-            f"{ts.date()},{np.sin(i / 3):.6f},{np.cos(i / 4):.6f},{np.sin(i / 5):.6f}"
-        )
+        rows.append(f"{ts.date()},{np.sin(i / 3):.6f},{np.cos(i / 4):.6f},{np.sin(i / 5):.6f}")
     return "\n".join(rows)
 
 
@@ -346,7 +355,9 @@ def _custom_map_field_climatology_netcdf_bytes() -> bytes:
     )
     lats = np.array([-10.0, 10.0], dtype=float)
     lons = np.array([120.0, 150.0], dtype=float)
-    values = np.arange(12 * lats.size * lons.size, dtype="float32").reshape(12, lats.size, lons.size)
+    values = np.arange(12 * lats.size * lons.size, dtype="float32").reshape(
+        12, lats.size, lons.size
+    )
     bounds = np.column_stack([np.arange(12, dtype=float), np.arange(1, 13, dtype=float)])
     ds = xr.Dataset(
         data_vars={
@@ -686,7 +697,7 @@ def test_map_job_endpoints():
     assert result.status_code == 200
     payload = result.json()["result"]
     assert payload["summary"]["driver_dataset"] == "pdo"
-    assert payload["download_formats"] == ["png", "pdf", "nc"]
+    assert payload["download_formats"] == ["png", "pdf", "nc", "zip"]
     assert payload["summary"]["correlation_width"] == 12
 
     png = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/png")
@@ -727,6 +738,41 @@ def test_map_job_endpoints():
     assert nc.status_code == 200
     assert nc.headers["content-type"] == "application/x-netcdf"
     assert nc.content[:3] == b"CDF"
+
+    zip_missing_sign = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/zip")
+    assert zip_missing_sign.status_code == 400
+
+    zip_positive = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/zip?sign=positive")
+    assert zip_positive.status_code == 200
+    assert zip_positive.headers["content-type"] == "application/zip"
+    assert 'positive_bundle.zip"' in zip_positive.headers["content-disposition"]
+    with zipfile.ZipFile(BytesIO(zip_positive.content)) as archive:
+        assert archive.namelist() == [
+            "sdcmap_pdo_ncep_air_rw12_positive.png",
+            "sdcmap_pdo_ncep_air_rw12_positive.pdf",
+            "sdcmap_pdo_ncep_air_rw12_positive_lag+00.png",
+        ]
+        assert archive.read("sdcmap_pdo_ncep_air_rw12_positive.png") == b"\x89PNG\r\n\x1a\nPOS"
+        assert archive.read("sdcmap_pdo_ncep_air_rw12_positive.pdf") == b"%PDF-1.4\nPOS"
+        assert (
+            archive.read("sdcmap_pdo_ncep_air_rw12_positive_lag+00.png")[:8] == b"\x89PNG\r\n\x1a\n"
+        )
+
+    zip_negative = client.get(f"/api/v1/jobs/sdc-map/{job_id}/download/zip?sign=negative")
+    assert zip_negative.status_code == 200
+    assert zip_negative.headers["content-type"] == "application/zip"
+    assert 'negative_bundle.zip"' in zip_negative.headers["content-disposition"]
+    with zipfile.ZipFile(BytesIO(zip_negative.content)) as archive:
+        assert archive.namelist() == [
+            "sdcmap_pdo_ncep_air_rw12_negative.png",
+            "sdcmap_pdo_ncep_air_rw12_negative.pdf",
+            "sdcmap_pdo_ncep_air_rw12_negative_lag+00.png",
+        ]
+        assert archive.read("sdcmap_pdo_ncep_air_rw12_negative.png") == b"\x89PNG\r\n\x1a\nNEG"
+        assert archive.read("sdcmap_pdo_ncep_air_rw12_negative.pdf") == b"%PDF-1.4\nNEG"
+        assert (
+            archive.read("sdcmap_pdo_ncep_air_rw12_negative_lag+00.png")[:8] == b"\x89PNG\r\n\x1a\n"
+        )
 
 
 def test_map_job_cancel_endpoint_for_queued_job():
@@ -982,7 +1028,10 @@ def test_map_field_inspect_exposes_selector_for_multilevel_dimension():
     assert variable_option["name"] == "air"
     assert variable_option["selectors"][0]["dimension"] == "level"
     assert variable_option["selectors"][0]["suggested_value"] == "850"
-    assert [option["value"] for option in variable_option["selectors"][0]["options"]] == ["850", "500"]
+    assert [option["value"] for option in variable_option["selectors"][0]["options"]] == [
+        "850",
+        "500",
+    ]
     assert any(warning["code"] == "dimension_selection_available" for warning in body["warnings"])
 
 
@@ -1171,8 +1220,12 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
                 "field_variable": "sst_anom",
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2000-06-01", "value": 1.2, "sign": "positive", "source": "manual"}],
-                "selected_negative": [{"date": "2001-01-01", "value": -1.1, "sign": "negative", "source": "auto"}],
+                "selected_positive": [
+                    {"date": "2000-06-01", "value": 1.2, "sign": "positive", "source": "manual"}
+                ],
+                "selected_negative": [
+                    {"date": "2001-01-01", "value": -1.1, "sign": "negative", "source": "auto"}
+                ],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.55,
@@ -1220,7 +1273,9 @@ def test_map_custom_upload_submit_and_explore_with_stubbed_map_service(monkeypat
     assert captured["explore"]["field_upload_path"]
     assert captured["explore"]["driver_upload_filename"] == "driver.csv"
     assert captured["explore"]["field_upload_filename"] == "field.nc"
-    assert captured["explore"]["manual_event_selection"]["selected_positive_dates"] == ["2000-06-01"]
+    assert captured["explore"]["manual_event_selection"]["selected_positive_dates"] == [
+        "2000-06-01"
+    ]
     assert explore.json()["result"]["summary"]["driver_source_type"] == "upload"
 
     submit = client.post("/api/v1/jobs/sdc-map", json=explore_payload)
@@ -1394,7 +1449,9 @@ def test_map_catalog_endpoint(monkeypatch):
         "sdcpy_studio.main.get_sdc_map_catalog",
         lambda: {
             "drivers": [{"key": "pdo", "description": "Pacific Decadal Oscillation"}],
-            "fields": [{"key": "ncep_air", "description": "NCEP air temperature", "variable": "air"}],
+            "fields": [
+                {"key": "ncep_air", "description": "NCEP air temperature", "variable": "air"}
+            ],
         },
     )
     response = client.get("/api/v1/sdc-map/catalog")
@@ -1454,8 +1511,12 @@ def test_map_driver_preview_endpoint(monkeypatch):
                 "n_points": 24,
             },
             "event_catalog": {
-                "selected_positive": [{"date": "2000-08-01", "value": 1.1, "sign": "positive", "source": "manual"}],
-                "selected_negative": [{"date": "2001-01-01", "value": -0.9, "sign": "negative", "source": "auto"}],
+                "selected_positive": [
+                    {"date": "2000-08-01", "value": 1.1, "sign": "positive", "source": "manual"}
+                ],
+                "selected_negative": [
+                    {"date": "2001-01-01", "value": -0.9, "sign": "negative", "source": "auto"}
+                ],
                 "ignored_positive": [],
                 "ignored_negative": [],
                 "base_state_threshold": 0.45,
@@ -1491,7 +1552,9 @@ def test_map_driver_preview_endpoint(monkeypatch):
     assert payload["result"]["event_catalog"]["selected_positive"][0]["date"] == "2000-08-01"
     assert payload["result"]["event_catalog"]["selected_positive"][0]["source"] == "manual"
     assert payload["result"]["event_catalog"]["selection_mode"] == "manual"
-    assert captured["payload"]["manual_event_selection"]["selected_positive_dates"] == ["2000-08-01"]
+    assert captured["payload"]["manual_event_selection"]["selected_positive_dates"] == [
+        "2000-08-01"
+    ]
 
 
 def test_map_driver_preview_endpoint_accepts_zero_seed_counts(monkeypatch):
@@ -1631,4 +1694,7 @@ def test_map_explore_endpoint_rejects_empty_event_selection(monkeypatch):
     )
 
     assert response.status_code == 422
-    assert "Select at least one positive or negative driver event before loading the dataset." in response.json()["detail"]
+    assert (
+        "Select at least one positive or negative driver event before loading the dataset."
+        in response.json()["detail"]
+    )

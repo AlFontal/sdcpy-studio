@@ -7,6 +7,7 @@ import csv
 import io
 import os
 import re
+import zipfile
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
@@ -140,7 +141,9 @@ class SDCMapJobCancelledError(RuntimeError):
     """Raised when a running SDC map job is cancelled cooperatively."""
 
 
-def _raise_if_cancelled(cancel_event: Event | None, description: str = "SDC map job cancelled.") -> None:
+def _raise_if_cancelled(
+    cancel_event: Event | None, description: str = "SDC map job cancelled."
+) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise SDCMapJobCancelledError(description)
 
@@ -192,7 +195,12 @@ def _download_map_asset(download_if_missing, url: str, destination: Path) -> Pat
         return download_if_missing(url, destination, **kwargs)
     except TypeError:
         # Backward compatibility with older sdcpy-map versions.
-        if destination.exists() and destination.stat().st_size > 0 and not refresh and not verify_remote:
+        if (
+            destination.exists()
+            and destination.stat().st_size > 0
+            and not refresh
+            and not verify_remote
+        ):
             return destination
         if refresh and destination.exists():
             destination.unlink()
@@ -355,7 +363,9 @@ def _infer_time_step_info(time_values: np.ndarray) -> dict[str, str]:
     if len(valid_dates) < 2:
         return {"singular": "time step", "plural": "time steps"}
 
-    diffs = np.diff(np.asarray(valid_dates, dtype="datetime64[D]")).astype("timedelta64[D]").astype(int)
+    diffs = (
+        np.diff(np.asarray(valid_dates, dtype="datetime64[D]")).astype("timedelta64[D]").astype(int)
+    )
     diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
     if diffs.size == 0:
         return {"singular": "time step", "plural": "time steps"}
@@ -426,6 +436,7 @@ def _derive_driver_defaults(driver: pd.Series) -> dict[str, object]:
 
 def _public_event_catalog(catalog: dict[str, object] | None) -> dict[str, object]:
     raw = catalog or {}
+
     def _normalize_event_item(item: object) -> dict[str, object]:
         payload = dict(item or {})
         return {
@@ -437,10 +448,18 @@ def _public_event_catalog(catalog: dict[str, object] | None) -> dict[str, object
         }
 
     return {
-        "selected_positive": [_normalize_event_item(item) for item in (raw.get("selected_positive") or [])],
-        "selected_negative": [_normalize_event_item(item) for item in (raw.get("selected_negative") or [])],
-        "ignored_positive": [_normalize_event_item(item) for item in (raw.get("ignored_positive") or [])],
-        "ignored_negative": [_normalize_event_item(item) for item in (raw.get("ignored_negative") or [])],
+        "selected_positive": [
+            _normalize_event_item(item) for item in (raw.get("selected_positive") or [])
+        ],
+        "selected_negative": [
+            _normalize_event_item(item) for item in (raw.get("selected_negative") or [])
+        ],
+        "ignored_positive": [
+            _normalize_event_item(item) for item in (raw.get("ignored_positive") or [])
+        ],
+        "ignored_negative": [
+            _normalize_event_item(item) for item in (raw.get("ignored_negative") or [])
+        ],
         "base_state_threshold": raw.get("base_state_threshold"),
         "base_state_count": int(raw.get("base_state_count") or 0),
         "warnings": [str(item) for item in (raw.get("warnings") or [])],
@@ -525,7 +544,9 @@ def _rank_csv_delimiter_candidates(content: bytes) -> list[tuple[str, str]]:
     seen: set[str] = set()
     if sample.strip():
         try:
-            sniffed = csv.Sniffer().sniff(sample, delimiters="".join(sep for sep, _ in _CSV_DELIMITERS))
+            sniffed = csv.Sniffer().sniff(
+                sample, delimiters="".join(sep for sep, _ in _CSV_DELIMITERS)
+            )
             for sep, label in _CSV_DELIMITERS:
                 if sniffed.delimiter == sep:
                     ranked.append((sep, label))
@@ -759,7 +780,9 @@ def _normalize_netcdf_open_error(filename: str) -> str:
 
 
 def _manually_decode_time_coordinate(dataset):
-    time_name = _pick_coord_name(["time", "date", "datetime", "t"], [str(name) for name in dataset.coords])
+    time_name = _pick_coord_name(
+        ["time", "date", "datetime", "t"], [str(name) for name in dataset.coords]
+    )
     if time_name is None:
         return dataset, False
 
@@ -795,7 +818,9 @@ def _manually_decode_time_coordinate(dataset):
         raise ValueError(
             "This NetCDF file could be opened, but its time axis could not be decoded automatically."
         ) from exc
-    dataset = dataset.assign_coords({time_name: (time_coord.dims, np.asarray(decoded, dtype=object))})
+    dataset = dataset.assign_coords(
+        {time_name: (time_coord.dims, np.asarray(decoded, dtype=object))}
+    )
     dataset.attrs["_sdcpy_studio_time_decode_mode"] = "manual"
     return dataset, True
 
@@ -861,7 +886,9 @@ def _pick_coord_name(candidates: list[str], names: list[str]) -> str | None:
 
 
 def _find_dimension_coordinate(data_array, dim_name: str):
-    if dim_name in data_array.coords and tuple(str(item) for item in data_array.coords[dim_name].dims) == (dim_name,):
+    if dim_name in data_array.coords and tuple(
+        str(item) for item in data_array.coords[dim_name].dims
+    ) == (dim_name,):
         return data_array.coords[dim_name]
     for coord_name in data_array.coords:
         coord = data_array.coords[coord_name]
@@ -871,7 +898,9 @@ def _find_dimension_coordinate(data_array, dim_name: str):
 
 
 def _climatology_time_axis_error(data_array) -> str | None:
-    time_dim = _pick_coord_name(["time", "date", "datetime", "t"], [str(dim) for dim in data_array.dims])
+    time_dim = _pick_coord_name(
+        ["time", "date", "datetime", "t"], [str(dim) for dim in data_array.dims]
+    )
     if time_dim is None:
         return None
 
@@ -894,7 +923,9 @@ def _climatology_time_axis_error(data_array) -> str | None:
     if not climatology_name and not climo_period and not looks_like_month_bins:
         return None
 
-    variable_label = f"'{data_array.name}'" if getattr(data_array, "name", None) else "This field variable"
+    variable_label = (
+        f"'{data_array.name}'" if getattr(data_array, "name", None) else "This field variable"
+    )
     if int(time_coord.size) == 12:
         bin_text = "12 month-of-year climatology bins"
     else:
@@ -973,7 +1004,9 @@ def _build_field_selector_definition(data_array, dim_name: str) -> FieldSelector
     )
 
 
-def _describe_custom_field_variable(data_array) -> tuple[FieldNormalizationInfo, list[FieldSelectorDefinition]]:
+def _describe_custom_field_variable(
+    data_array,
+) -> tuple[FieldNormalizationInfo, list[FieldSelectorDefinition]]:
     original_dims = [str(dim) for dim in data_array.dims]
     time_dim = _pick_coord_name(["time", "date", "datetime", "t"], original_dims)
     lat_dim = _pick_coord_name(["lat", "latitude", "y"], original_dims)
@@ -1011,7 +1044,9 @@ def _describe_custom_field_variable(data_array) -> tuple[FieldNormalizationInfo,
 def _apply_field_dimension_selection(data_array, dim_name: str, raw_value: str):
     coord = _find_dimension_coordinate(data_array, dim_name)
     if coord is None:
-        raise ValueError(f"Field dimension '{dim_name}' does not expose coordinate values for selection.")
+        raise ValueError(
+            f"Field dimension '{dim_name}' does not expose coordinate values for selection."
+        )
     coord_values = list(np.asarray(coord.values).tolist())
     serialized = [_serialize_selector_value(value) for value in coord_values]
     try:
@@ -1047,7 +1082,11 @@ def _normalize_custom_field_dataarray(
     normalization, selectors = _describe_custom_field_variable(data_array)
     da = data_array
     selected_values: dict[str, str] = {}
-    selection_map = {str(key): str(value) for key, value in (dimension_selections or {}).items() if value is not None}
+    selection_map = {
+        str(key): str(value)
+        for key, value in (dimension_selections or {}).items()
+        if value is not None
+    }
     for selector in selectors:
         selected_value = selection_map.get(selector.dimension) or selector.suggested_value
         if not selected_value:
@@ -1074,7 +1113,9 @@ def _normalize_custom_field_dataarray(
 
     for coord_name in ("time", "lat", "lon"):
         if coord_name not in da.coords:
-            raise ValueError(f"Field variable is missing required '{coord_name}' coordinate values.")
+            raise ValueError(
+                f"Field variable is missing required '{coord_name}' coordinate values."
+            )
 
     # Normalize and sort longitude into [-180, 180) when data appears in [0, 360].
     lon_values = np.asarray(da["lon"].values, dtype=float)
@@ -1085,7 +1126,10 @@ def _normalize_custom_field_dataarray(
     da = da.sortby("time").sortby("lat").sortby("lon")
 
     if apply_config is not None:
-        if getattr(apply_config, "time_start", None) is not None or getattr(apply_config, "time_end", None) is not None:
+        if (
+            getattr(apply_config, "time_start", None) is not None
+            or getattr(apply_config, "time_end", None) is not None
+        ):
             try:
                 start = getattr(apply_config, "time_start", None) or None
                 end = getattr(apply_config, "time_end", None) or None
@@ -1101,7 +1145,11 @@ def _normalize_custom_field_dataarray(
             lon=slice(None, None, max(1, int(getattr(apply_config, "lon_stride", 1)))),
         )
 
-    if int(da.sizes.get("time", 0)) <= 0 or int(da.sizes.get("lat", 0)) <= 0 or int(da.sizes.get("lon", 0)) <= 0:
+    if (
+        int(da.sizes.get("time", 0)) <= 0
+        or int(da.sizes.get("lat", 0)) <= 0
+        or int(da.sizes.get("lon", 0)) <= 0
+    ):
         raise ValueError("Selected field variable has no data after applying bounds/time filters.")
 
     normalized = da.astype(float)
@@ -1155,7 +1203,9 @@ def inspect_sdc_map_field_netcdf(dataset_path: Path | str, filename: str) -> dic
                 )
             if selectors:
                 selector_summary = ", ".join(
-                    f"{selector.dimension}={selector.suggested_value}" for selector in selectors if selector.suggested_value
+                    f"{selector.dimension}={selector.suggested_value}"
+                    for selector in selectors
+                    if selector.suggested_value
                 )
                 variable_warnings.append(
                     InspectWarning(
@@ -1205,9 +1255,7 @@ def inspect_sdc_map_field_netcdf(dataset_path: Path | str, filename: str) -> dic
             )
             if climatology_reason:
                 raise ValueError(climatology_reason)
-            reason_preview = "; ".join(
-                f"{item.name}: {item.reason}" for item in incompatible[:3]
-            )
+            reason_preview = "; ".join(f"{item.name}: {item.reason}" for item in incompatible[:3])
             raise ValueError(
                 "No compatible variable found in NetCDF. Expected a variable with time/lat/lon dimensions, "
                 "optionally with singleton extra dimensions."
@@ -1264,7 +1312,9 @@ def load_custom_map_field_subset(
     try:
         if variable not in dataset.data_vars:
             available = ", ".join(str(name) for name in dataset.data_vars)
-            raise ValueError(f"Field variable '{variable}' not found. Available variables: {available}.")
+            raise ValueError(
+                f"Field variable '{variable}' not found. Available variables: {available}."
+            )
         da = _normalize_custom_field_dataarray(
             dataset[variable],
             apply_config=config,
@@ -1582,7 +1632,9 @@ def export_job_artifact(job_result: dict, fmt: str) -> tuple[bytes, str, str]:
     raise ValueError(f"Unsupported download format: {fmt}")
 
 
-def export_sdc_map_artifact(job_result: dict, fmt: str, sign: str | None = None) -> tuple[bytes, str, str]:
+def export_sdc_map_artifact(
+    job_result: dict, fmt: str, sign: str | None = None
+) -> tuple[bytes, str, str]:
     """Build downloadable output bytes from a finished SDC map job result."""
     artifacts = job_result.get("_artifacts_map")
     if not artifacts:
@@ -1612,6 +1664,13 @@ def export_sdc_map_artifact(job_result: dict, fmt: str, sign: str | None = None)
             payload = artifacts.get(f"pdf_{sign_key}") or artifacts["pdf"]
             return payload, "application/pdf", f"{basename}.pdf"
         return artifacts["pdf"], "application/pdf", f"{basename}.pdf"
+    if fmt_key == "zip":
+        if not sign_key:
+            raise ValueError("ZIP download requires an active map sign: 'positive' or 'negative'.")
+        payload = _build_sdc_map_zip_artifact(
+            job_result=job_result, sign_key=sign_key, basename=basename
+        )
+        return payload, "application/zip", f"{basename}_bundle.zip"
     if fmt_key == "nc":
         return artifacts["nc"], "application/x-netcdf", f"{basename}.nc"
     raise ValueError(f"Unsupported download format: {fmt}")
@@ -1621,7 +1680,7 @@ def _canonical_psl_download_url(url: str) -> str:
     """Normalize NOAA PSL fileServer links to downloads host for stability."""
     prefix = "https://psl.noaa.gov/thredds/fileServer/"
     if url.startswith(prefix):
-        return f"https://downloads.psl.noaa.gov/{url[len(prefix):]}"
+        return f"https://downloads.psl.noaa.gov/{url[len(prefix) :]}"
     return url
 
 
@@ -1747,11 +1806,16 @@ def _build_event_map_netcdf_bytes(
             if lag_values is None:
                 lag_values = class_lags
             elif not np.array_equal(lag_values, class_lags):
-                raise ValueError("Positive and negative lag coordinates must match for NetCDF export.")
+                raise ValueError(
+                    "Positive and negative lag coordinates must match for NetCDF export."
+                )
             corr_by_lag = np.asarray(lag_maps.get("corr_by_lag"), dtype=float)
             event_count_by_lag = np.asarray(lag_maps.get("event_count_by_lag"), dtype=float)
             data_vars[f"{sign_key}_corr_by_lag"] = (("lag", "lat", "lon"), corr_by_lag)
-            data_vars[f"{sign_key}_event_count_by_lag"] = (("lag", "lat", "lon"), event_count_by_lag)
+            data_vars[f"{sign_key}_event_count_by_lag"] = (
+                ("lag", "lat", "lon"),
+                event_count_by_lag,
+            )
 
     dataset = xr.Dataset(
         data_vars=data_vars,
@@ -1958,10 +2022,12 @@ def _build_map_class_summary(
     lons: np.ndarray,
 ) -> dict[str, object]:
     layers = class_result.get("layers") or {}
-    valid_cells, field_lat_min, field_lat_max, field_lon_min, field_lon_max = _map_cell_bounds_from_layers(
-        layers,
-        lats,
-        lons,
+    valid_cells, field_lat_min, field_lat_max, field_lon_min, field_lon_max = (
+        _map_cell_bounds_from_layers(
+            layers,
+            lats,
+            lons,
+        )
     )
     corr_mean = np.asarray(layers.get("corr_mean"), dtype=float)
     public_summary = dict(class_result.get("summary") or {})
@@ -1979,24 +2045,63 @@ def _build_map_class_summary(
     return public_summary
 
 
-def _render_map_class_png(
+def _plot_serialized_coastline(ax, coastline_trace: dict[str, object] | None) -> None:
+    lon_values = list(coastline_trace.get("lon") or []) if coastline_trace else []
+    lat_values = list(coastline_trace.get("lat") or []) if coastline_trace else []
+    if not lon_values or not lat_values:
+        return
+
+    segment_lon: list[float] = []
+    segment_lat: list[float] = []
+    for lon_value, lat_value in zip(lon_values, lat_values, strict=False):
+        if lon_value is None or lat_value is None:
+            if segment_lon and segment_lat:
+                ax.plot(segment_lon, segment_lat, color="black", linewidth=0.35)
+            segment_lon = []
+            segment_lat = []
+            continue
+        segment_lon.append(float(lon_value))
+        segment_lat.append(float(lat_value))
+
+    if segment_lon and segment_lat:
+        ax.plot(segment_lon, segment_lat, color="black", linewidth=0.35)
+
+
+def _expand_plot_limits(
+    min_value: float, max_value: float, *, padding: float = 0.5
+) -> tuple[float, float]:
+    if np.isclose(min_value, max_value):
+        return float(min_value - padding), float(max_value + padding)
+    return float(min_value), float(max_value)
+
+
+def _render_map_lag_png(
     *,
     sign_label: str,
-    lag_maps: dict[str, object],
+    lag: int,
+    lag_values: np.ndarray,
     lats: np.ndarray,
     lons: np.ndarray,
-    coastline,
+    coastline_trace: dict[str, object] | None,
 ) -> bytes:
-    from sdcpy_map import plot_correlation_maps_by_lag
+    import matplotlib
 
-    fig, *_ = plot_correlation_maps_by_lag(
-        lag_maps=lag_maps,
-        lats=lats,
-        lons=lons,
-        coastline=coastline,
-        title=f"{sign_label} events: peak-averaged correlation by lag",
-        return_handles=True,
-    )
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8.8, 4.8))
+    mesh = ax.pcolormesh(lons, lats, lag_values, shading="auto", cmap="RdBu_r", vmin=-1.0, vmax=1.0)
+    _plot_serialized_coastline(ax, coastline_trace)
+    ax.set_title(f"{sign_label} events: peak-averaged correlation at lag {lag:+d}", fontsize=12)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_xlim(*_expand_plot_limits(float(np.nanmin(lons)), float(np.nanmax(lons))))
+    ax.set_ylim(*_expand_plot_limits(float(np.nanmin(lats)), float(np.nanmax(lats))))
+    ax.tick_params(labelsize=9)
+    cbar = fig.colorbar(mesh, ax=ax, shrink=0.92, pad=0.03)
+    cbar.set_label("Correlation")
+    cbar.ax.tick_params(labelsize=8)
+    fig.tight_layout(pad=0.8)
     png_buffer = io.BytesIO()
     fig.savefig(png_buffer, format="png", dpi=180, bbox_inches="tight", pad_inches=0.02)
     png_bytes = png_buffer.getvalue()
@@ -2079,7 +2184,10 @@ def _render_map_driver_events_panel_png(
 
     dates = pd.to_datetime(time_index)
     values = np.asarray(
-        [float(value) if value is not None and np.isfinite(value) else np.nan for value in driver_values],
+        [
+            float(value) if value is not None and np.isfinite(value) else np.nan
+            for value in driver_values
+        ],
         dtype=float,
     )
     date_to_index = {stamp.date().isoformat(): idx for idx, stamp in enumerate(dates)}
@@ -2099,7 +2207,9 @@ def _render_map_driver_events_panel_png(
             continue
         shade_alpha = 0.10 if sign_key == active_sign_key else 0.045
         for event in events:
-            event_index = _resolve_report_event_index(event, date_to_index=date_to_index, series_len=len(dates))
+            event_index = _resolve_report_event_index(
+                event, date_to_index=date_to_index, series_len=len(dates)
+            )
             if event_index is None:
                 continue
             bounds = _event_window_bounds(event_index, int(correlation_width), len(dates))
@@ -2113,7 +2223,9 @@ def _render_map_driver_events_panel_png(
                     linewidth=0,
                 )
 
-    ax.set_title(f"{sign_label} events · driver time series with selected event windows", fontsize=12)
+    ax.set_title(
+        f"{sign_label} events · driver time series with selected event windows", fontsize=12
+    )
     ax.set_ylabel("Driver")
     ax.set_xlabel("Time")
     ax.grid(alpha=0.18)
@@ -2159,6 +2271,59 @@ def _combine_map_report_images(images: list[tuple[str, bytes]], *, fmt: str) -> 
     return buffer.getvalue()
 
 
+def _format_signed_lag_filename(lag: int, *, digits: int) -> str:
+    return f"{int(lag):+0{int(digits) + 1}d}"
+
+
+def _build_sdc_map_zip_artifact(*, job_result: dict, sign_key: str, basename: str) -> bytes:
+    artifacts = job_result.get("_artifacts_map") or {}
+    class_results = job_result.get("class_results") or {}
+    class_result = class_results.get(sign_key) or {}
+    lag_maps = class_result.get("lag_maps") or {}
+
+    lags = [int(value) for value in (lag_maps.get("lags") or [])]
+    corr_by_lag = np.asarray(lag_maps.get("corr_by_lag") or [], dtype=float)
+    lats = np.asarray(lag_maps.get("lat") or [], dtype=float)
+    lons = np.asarray(lag_maps.get("lon") or [], dtype=float)
+    coastline_trace = (
+        lag_maps.get("coastline") if isinstance(lag_maps.get("coastline"), dict) else None
+    )
+    lag_digits = max(2, len(str(max((abs(lag) for lag in lags), default=0))))
+    sign_label = sign_key.capitalize()
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        png_payload = artifacts.get(f"png_{sign_key}") or artifacts.get("png")
+        pdf_payload = artifacts.get(f"pdf_{sign_key}") or artifacts.get("pdf")
+        if png_payload:
+            archive.writestr(f"{basename}.png", png_payload)
+        if pdf_payload:
+            archive.writestr(f"{basename}.pdf", pdf_payload)
+
+        if (
+            lags
+            and corr_by_lag.ndim == 3
+            and len(lags) == int(corr_by_lag.shape[0])
+            and len(lats)
+            and len(lons)
+        ):
+            for idx, lag in enumerate(lags):
+                lag_png = _render_map_lag_png(
+                    sign_label=sign_label,
+                    lag=lag,
+                    lag_values=np.asarray(corr_by_lag[idx], dtype=float),
+                    lats=lats,
+                    lons=lons,
+                    coastline_trace=coastline_trace,
+                )
+                archive.writestr(
+                    f"{basename}_lag{_format_signed_lag_filename(lag, digits=lag_digits)}.png",
+                    lag_png,
+                )
+
+    return archive_buffer.getvalue()
+
+
 def fetch_sdc_map_assets(
     data_dir: Path | str,
     driver_key: str,
@@ -2170,25 +2335,33 @@ def fetch_sdc_map_assets(
 ) -> dict[str, Path]:
     """Fetch map assets using collision-safe filenames and stable source URLs."""
     out: dict[str, Path] = {}
-    _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})")
+    _emit_progress(
+        progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({driver_key})"
+    )
     out["driver"] = fetch_sdc_map_driver_asset(
         data_dir,
         driver_key,
     )
-    _emit_progress(progress_hook, progress_start + 1, progress_total, f"Ensuring field dataset ({field_key})")
+    _emit_progress(
+        progress_hook, progress_start + 1, progress_total, f"Ensuring field dataset ({field_key})"
+    )
     out["field"] = fetch_sdc_map_field_asset(
         data_dir,
         field_key,
     )
     if include_coastline:
-        _emit_progress(progress_hook, progress_start + 2, progress_total, "Ensuring coastline dataset")
+        _emit_progress(
+            progress_hook, progress_start + 2, progress_total, "Ensuring coastline dataset"
+        )
         out["coastline"] = fetch_sdc_map_coastline_asset(data_dir)
 
     return out
 
 
 def fetch_sdc_map_driver_asset(data_dir: Path | str, driver_key: str) -> Path:
-    coastline_url, driver_datasets, _field_datasets, download_if_missing = _load_map_dataset_registry()
+    coastline_url, driver_datasets, _field_datasets, download_if_missing = (
+        _load_map_dataset_registry()
+    )
     _ = coastline_url
     if driver_key not in driver_datasets:
         supported = ", ".join(sorted(driver_datasets))
@@ -2205,7 +2378,9 @@ def fetch_sdc_map_driver_asset(data_dir: Path | str, driver_key: str) -> Path:
 
 
 def fetch_sdc_map_field_asset(data_dir: Path | str, field_key: str) -> Path:
-    coastline_url, _driver_datasets, field_datasets, download_if_missing = _load_map_dataset_registry()
+    coastline_url, _driver_datasets, field_datasets, download_if_missing = (
+        _load_map_dataset_registry()
+    )
     _ = coastline_url
     if field_key not in field_datasets:
         supported = ", ".join(sorted(field_datasets))
@@ -2222,7 +2397,9 @@ def fetch_sdc_map_field_asset(data_dir: Path | str, field_key: str) -> Path:
 
 
 def fetch_sdc_map_coastline_asset(data_dir: Path | str) -> Path:
-    coastline_url, _driver_datasets, _field_datasets, download_if_missing = _load_map_dataset_registry()
+    coastline_url, _driver_datasets, _field_datasets, download_if_missing = (
+        _load_map_dataset_registry()
+    )
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     source_url = _canonical_psl_download_url(coastline_url)
@@ -2233,7 +2410,9 @@ def fetch_sdc_map_coastline_asset(data_dir: Path | str) -> Path:
     )
 
 
-def _get_driver_data_coverage(driver_key: str, data_dir: Path | str | None = None) -> dict[str, object]:
+def _get_driver_data_coverage(
+    driver_key: str, data_dir: Path | str | None = None
+) -> dict[str, object]:
     with _DRIVER_COVERAGE_CACHE_LOCK:
         cached = _DRIVER_COVERAGE_CACHE.get(driver_key)
     if cached is not None:
@@ -2265,7 +2444,9 @@ def _get_driver_data_coverage(driver_key: str, data_dir: Path | str | None = Non
     return coverage
 
 
-def _get_field_data_coverage(field_key: str, data_dir: Path | str | None = None) -> dict[str, object]:
+def _get_field_data_coverage(
+    field_key: str, data_dir: Path | str | None = None
+) -> dict[str, object]:
     with _FIELD_COVERAGE_CACHE_LOCK:
         cached = _FIELD_COVERAGE_CACHE.get(field_key)
     if cached is not None:
@@ -2380,7 +2561,9 @@ def get_sdc_map_driver_defaults(driver_key: str, window_years: int = 3) -> dict:
             "SDC Map dependencies are unavailable in this environment. Install project dependencies with `uv sync`."
         ) from exc
 
-    _coastline_url, driver_datasets, _field_datasets, _download_if_missing = _load_map_dataset_registry()
+    _coastline_url, driver_datasets, _field_datasets, _download_if_missing = (
+        _load_map_dataset_registry()
+    )
     if driver_key not in driver_datasets:
         supported = ", ".join(sorted(driver_datasets))
         raise ValueError(f"Unknown driver dataset '{driver_key}'. Supported: {supported}.")
@@ -2430,9 +2613,12 @@ def _get_field_data_bounds(field_key: str, data_dir: Path | str = None) -> dict[
 
     # Load field with completely unconstrained bounds
     config = SDCMapConfig(
-        lat_min=-90, lat_max=90,
-        lon_min=-180, lon_max=180,
-        lat_stride=1, lon_stride=1,
+        lat_min=-90,
+        lat_max=90,
+        lon_min=-180,
+        lon_max=180,
+        lat_stride=1,
+        lon_stride=1,
     )
     mapped_field = load_field_anomaly_subset(field_path, config=config, field_key=field_key)
     lats, lons = grid_coordinates(mapped_field)
@@ -2469,7 +2655,9 @@ def _resolve_map_bounds(
 
     if request.field_source_type == "upload":
         if not request.field_upload_path or not request.field_variable:
-            raise ValueError("Uploaded field source is missing resolved path or variable selection.")
+            raise ValueError(
+                "Uploaded field source is missing resolved path or variable selection."
+            )
         field_bounds = get_custom_field_bounds(
             request.field_upload_path,
             variable=request.field_variable,
@@ -2510,7 +2698,9 @@ def _resolve_map_paths_for_request(
         cache_key = (str(data_dir.resolve()), request.driver_dataset, request.field_dataset)
         with _MAP_DATA_PATH_CACHE_LOCK:
             cached_paths = _MAP_DATA_PATH_CACHE.get(cache_key)
-        if cached_paths and all(path.exists() and path.stat().st_size > 0 for path in cached_paths.values()):
+        if cached_paths and all(
+            path.exists() and path.stat().st_size > 0 for path in cached_paths.values()
+        ):
             return cached_paths
         paths = fetch_sdc_map_assets(
             data_dir=data_dir,
@@ -2528,11 +2718,21 @@ def _resolve_map_paths_for_request(
         "coastline": fetch_sdc_map_coastline_asset(data_dir),
     }
     if driver_catalog:
-        _emit_progress(progress_hook, progress_start, progress_total, f"Ensuring driver dataset ({request.driver_dataset})")
+        _emit_progress(
+            progress_hook,
+            progress_start,
+            progress_total,
+            f"Ensuring driver dataset ({request.driver_dataset})",
+        )
         paths["driver"] = fetch_sdc_map_driver_asset(data_dir, request.driver_dataset)
     if field_catalog:
         field_progress = progress_start + (1 if driver_catalog else 0)
-        _emit_progress(progress_hook, field_progress, progress_total, f"Ensuring field dataset ({request.field_dataset})")
+        _emit_progress(
+            progress_hook,
+            field_progress,
+            progress_total,
+            f"Ensuring field dataset ({request.field_dataset})",
+        )
         paths["field"] = fetch_sdc_map_field_asset(data_dir, request.field_dataset)
     return paths
 
@@ -2586,7 +2786,11 @@ def build_sdc_map_driver_preview(payload: dict) -> dict:
             driver_key=request.driver_dataset,
         )
     else:
-        if not request.driver_upload_path or not request.driver_date_column or not request.driver_value_column:
+        if (
+            not request.driver_upload_path
+            or not request.driver_date_column
+            or not request.driver_value_column
+        ):
             raise ValueError("Uploaded driver is missing file path or selected columns.")
         driver_full = load_custom_map_driver_series(
             request.driver_upload_path,
@@ -2713,7 +2917,11 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             driver_key=request.driver_dataset,
         )
     else:
-        if not request.driver_upload_path or not request.driver_date_column or not request.driver_value_column:
+        if (
+            not request.driver_upload_path
+            or not request.driver_date_column
+            or not request.driver_value_column
+        ):
             raise ValueError("Uploaded driver is missing file path or selected columns.")
         full_driver = load_custom_map_driver_series(
             request.driver_upload_path,
@@ -2743,7 +2951,9 @@ def build_sdc_map_exploration(payload: dict) -> dict:
     )
 
     if _is_catalog_driver(request):
-        driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+        driver = load_driver_series(
+            paths["driver"], config=config, driver_key=request.driver_dataset
+        )
     else:
         driver = load_custom_map_driver_series(
             request.driver_upload_path or "",
@@ -2753,7 +2963,9 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             time_end=time_end,
         )
     if _is_catalog_field(request):
-        mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+        mapped_field = load_field_anomaly_subset(
+            paths["field"], config=config, field_key=request.field_dataset
+        )
     else:
         if not request.field_upload_path or not request.field_variable:
             raise ValueError("Uploaded field is missing file path or selected variable.")
@@ -2820,7 +3032,9 @@ def build_sdc_map_exploration(payload: dict) -> dict:
             "field_dataset": request.field_upload_filename or request.field_dataset,
             "driver_source_type": request.driver_source_type,
             "field_source_type": request.field_source_type,
-            "field_variable": request.field_variable if request.field_source_type == "upload" else request.field_dataset,
+            "field_variable": request.field_variable
+            if request.field_source_type == "upload"
+            else request.field_dataset,
             "field_dimension_selections": (
                 dict(request.field_dimension_selections)
                 if request.field_source_type == "upload"
@@ -2928,7 +3142,11 @@ def run_sdc_map_job(
             driver_key=request.driver_dataset,
         )
     else:
-        if not request.driver_upload_path or not request.driver_date_column or not request.driver_value_column:
+        if (
+            not request.driver_upload_path
+            or not request.driver_date_column
+            or not request.driver_value_column
+        ):
             raise ValueError("Uploaded driver is missing file path or selected columns.")
         full_driver = load_custom_map_driver_series(
             request.driver_upload_path,
@@ -2959,7 +3177,9 @@ def run_sdc_map_job(
     _emit_progress(progress_hook, 4, initial_progress_total, "Loading and aligning series")
     _raise_if_cancelled(cancel_event, "SDC map run cancelled before loading datasets.")
     if _is_catalog_driver(request):
-        driver = load_driver_series(paths["driver"], config=config, driver_key=request.driver_dataset)
+        driver = load_driver_series(
+            paths["driver"], config=config, driver_key=request.driver_dataset
+        )
     else:
         driver = load_custom_map_driver_series(
             request.driver_upload_path or "",
@@ -2969,7 +3189,9 @@ def run_sdc_map_job(
             time_end=time_end,
         )
     if _is_catalog_field(request):
-        mapped_field = load_field_anomaly_subset(paths["field"], config=config, field_key=request.field_dataset)
+        mapped_field = load_field_anomaly_subset(
+            paths["field"], config=config, field_key=request.field_dataset
+        )
     else:
         if not request.field_upload_path or not request.field_variable:
             raise ValueError("Uploaded field is missing file path or selected variable.")
@@ -3003,7 +3225,9 @@ def run_sdc_map_job(
     n_lon = int(mapped_field.sizes.get("lon", 0))
     total_cells = max(1, n_lat * n_lon)
     progress_total = total_cells + 7
-    _emit_progress(progress_hook, 4, progress_total, f"Grid ready ({n_lat}x{n_lon}). Starting cell loop")
+    _emit_progress(
+        progress_hook, 4, progress_total, f"Grid ready ({n_lat}x{n_lon}). Starting cell loop"
+    )
     event_result, _ = _compute_sdcmap_event_layers_with_progress(
         driver=driver,
         mapped_field=mapped_field,
@@ -3029,7 +3253,9 @@ def run_sdc_map_job(
         time_step_info=time_step_info,
     )
 
-    _emit_progress(progress_hook, progress_total - 2, progress_total, "Rendering event-class figures")
+    _emit_progress(
+        progress_hook, progress_total - 2, progress_total, "Rendering event-class figures"
+    )
     _raise_if_cancelled(cancel_event, "SDC map run cancelled before figure rendering.")
     positive_static_png = _render_map_class_static_png(
         sign_label="Positive",
@@ -3137,14 +3363,14 @@ def run_sdc_map_job(
     runtime_seconds = perf_counter() - started
     corr_mean = np.asarray(compact_layers["corr_mean"], dtype=float)
     total_cells_result = int(corr_mean.size)
-    valid_cells, field_lat_min, field_lat_max, field_lon_min, field_lon_max = _map_cell_bounds_from_layers(
-        compact_layers,
-        lats,
-        lons,
+    valid_cells, field_lat_min, field_lat_max, field_lon_min, field_lon_max = (
+        _map_cell_bounds_from_layers(
+            compact_layers,
+            lats,
+            lons,
+        )
     )
-    mean_abs_corr = (
-        float(np.nanmean(np.abs(corr_mean))) if np.isfinite(corr_mean).any() else None
-    )
+    mean_abs_corr = float(np.nanmean(np.abs(corr_mean))) if np.isfinite(corr_mean).any() else None
 
     class_results_payload: dict[str, dict[str, object]] = {}
     for sign_key in ("positive", "negative"):
@@ -3159,9 +3385,13 @@ def run_sdc_map_job(
         valid_class_cells = int(class_summary.get("valid_cells") or 0)
         empty_reason = None
         if selected_event_count == 0:
-            empty_reason = f"No usable {sign_key} driver events were detected for the selected time window."
+            empty_reason = (
+                f"No usable {sign_key} driver events were detected for the selected time window."
+            )
         elif valid_class_cells == 0:
-            empty_reason = f"No valid {sign_key} map cells passed filtering with the current parameters."
+            empty_reason = (
+                f"No valid {sign_key} map cells passed filtering with the current parameters."
+            )
         class_results_payload[sign_key] = {
             "summary": class_summary,
             "events": list(class_result.get("events") or []),
@@ -3180,7 +3410,9 @@ def run_sdc_map_job(
     if request.n_permutations > 99:
         notes.append("High permutation count selected; map runs may take substantially longer.")
     if using_full_bounds:
-        notes.append("Full geographic map was computed; this mode is the most computationally expensive.")
+        notes.append(
+            "Full geographic map was computed; this mode is the most computationally expensive."
+        )
     notes.extend(str(item) for item in public_catalog["warnings"])
 
     _emit_progress(progress_hook, progress_total, progress_total, "Completed")
@@ -3197,7 +3429,9 @@ def run_sdc_map_job(
             "field_dataset": request.field_upload_filename or request.field_dataset,
             "driver_source_type": request.driver_source_type,
             "field_source_type": request.field_source_type,
-            "field_variable": request.field_variable if request.field_source_type == "upload" else request.field_dataset,
+            "field_variable": request.field_variable
+            if request.field_source_type == "upload"
+            else request.field_dataset,
             "field_dimension_selections": (
                 dict(request.field_dimension_selections)
                 if request.field_source_type == "upload"
@@ -3224,7 +3458,9 @@ def run_sdc_map_job(
             "n_lon": int(mapped_field.sizes.get("lon", 0)),
             "total_cells": total_cells_result,
             "valid_cells": valid_cells,
-            "valid_cell_rate": float(valid_cells / total_cells_result) if total_cells_result else 0.0,
+            "valid_cell_rate": float(valid_cells / total_cells_result)
+            if total_cells_result
+            else 0.0,
             "field_lat_min": field_lat_min,
             "field_lat_max": field_lat_max,
             "field_lon_min": field_lon_min,
@@ -3244,7 +3480,7 @@ def run_sdc_map_job(
         "runtime_seconds": float(runtime_seconds),
         "figure_png_base64": base64.b64encode(png_bytes).decode("ascii"),
         "layer_maps": layer_maps,
-        "download_formats": ["png", "pdf", "nc"],
+        "download_formats": ["png", "pdf", "nc", "zip"],
         "_artifacts_map": {
             "png": combined_report_png,
             "png_positive": positive_report_png,
