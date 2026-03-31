@@ -714,7 +714,7 @@ test("sdc map accepts custom driver CSV and custom field NetCDF uploads", async 
           runtime_seconds: 1.2,
           figure_png_base64:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-          download_formats: ["png", "pdf", "nc"],
+          download_formats: ["png", "pdf", "nc", "zip"],
           layer_maps: {
             lat: [-20, 0, 20],
             lon: [-160, -140, -120],
@@ -1187,7 +1187,7 @@ test("manual map event curation persists through load and run, and reseeds when 
           runtime_seconds: 0.7,
           figure_png_base64:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-          download_formats: ["png", "pdf", "nc"],
+          download_formats: ["png", "pdf", "nc", "zip"],
           layer_maps: { lat: [-10, 10], lon: [-150, -130], coastline: { lat: [null], lon: [null] }, layers: [] },
         },
       }),
@@ -1230,6 +1230,7 @@ test("manual map event curation persists through load and run, and reseeds when 
     "2000-06-01",
   ]);
   await expect(page.locator("#map_download_pdf")).toBeEnabled();
+  await expect(page.locator("#map_download_zip")).toBeEnabled();
 
   await page.getByTestId("map-clear-all-events-button").click();
   await expect
@@ -1485,6 +1486,7 @@ test("running map jobs can be stopped from the SDC Map action row", async ({ pag
   await expect(page.getByTestId("map-stop-button")).toBeHidden();
   await expect(page.locator("#map_run")).toBeVisible();
   await expect(page.locator("#map_download_pdf")).toBeDisabled();
+  await expect(page.locator("#map_download_zip")).toBeDisabled();
 });
 
 test("custom NetCDF uploads expose extra-dimension selectors and submit the chosen value", async ({ page }) => {
@@ -1869,7 +1871,7 @@ test("map results warn when no valid cells pass filtering", async ({ page }) => 
           runtime_seconds: 1.1,
           figure_png_base64:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGMwMDD4DwAD1QG6hQm8WQAAAABJRU5ErkJggg==",
-          download_formats: ["png", "pdf", "nc"],
+          download_formats: ["png", "pdf", "nc", "zip"],
           layer_maps: {
             lat: [-10, 10],
             lon: [-150, -130],

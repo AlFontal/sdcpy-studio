@@ -123,6 +123,7 @@ const mapSelectedCellText = document.getElementById("map_selected_cell");
 const mapSummary = document.getElementById("sdc_map_summary");
 const mapDownloadPngButton = document.getElementById("map_download_png");
 const mapDownloadPdfButton = document.getElementById("map_download_pdf");
+const mapDownloadZipButton = document.getElementById("map_download_zip");
 const mapDownloadNcButton = document.getElementById("map_download_nc");
 const mapDownloadPngLabel = document.getElementById("map_download_png_label");
 const mapDatasetDocsContent = document.getElementById("map_dataset_docs_content");
@@ -824,6 +825,9 @@ function setMapDownloadButtons(enabled) {
   const isReady = mapDownloadsEnabled && !!latestMapResultJobId;
   if (mapDownloadNcButton) {
     mapDownloadNcButton.disabled = !isReady;
+  }
+  if (mapDownloadZipButton) {
+    mapDownloadZipButton.disabled = !isReady;
   }
   if (mapDownloadPdfButton) {
     mapDownloadPdfButton.disabled = !isReady;
@@ -1856,6 +1860,7 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
   const eventGroups = getMapDriverEventsByStatus(eventCatalog, correlationWidth);
   const positive = eventGroups.selectedPositive;
   const negative = eventGroups.selectedNegative;
+  const hasSelectedEvents = positive.length > 0 || negative.length > 0;
   const warnings = Array.isArray(eventCatalog.warnings) ? eventCatalog.warnings : [];
   const selectionMode = hasEffectiveMapManualSelection(eventCatalog)
     ? "manual"
@@ -1871,6 +1876,9 @@ function renderMapEventPreview(catalog, contextLabel = "current", options = {}) 
     `<p class="hint"><strong>Selection mode:</strong> ${escapeHtml(selectionMode)}</p>`,
     `<p><strong>Positive events (N+):</strong> ${escapeHtml(formatDriverEventList(positive))}</p>`,
     `<p><strong>Negative events (N-):</strong> ${escapeHtml(formatDriverEventList(negative))}</p>`,
+    !hasSelectedEvents
+      ? '<p class="hint">No selected event is available for preview.</p>'
+      : "",
     `<p><strong>Base-state threshold:</strong> ${escapeHtml(thresholdLabel)} · <strong>Base-state samples:</strong> ${escapeHtml(baseStateCount)}</p>`,
     warnings.length
       ? `<p class="hint"><strong>Warnings:</strong> ${escapeHtml(warnings.join(" "))}</p>`
@@ -4941,9 +4949,10 @@ function triggerDownload(fmt) {
 }
 
 function triggerMapDownload(fmt) {
-  if (latestMapResultJobId && (fmt === "png" || fmt === "pdf" || fmt === "nc")) {
+  if (latestMapResultJobId && (fmt === "png" || fmt === "pdf" || fmt === "zip" || fmt === "nc")) {
+    const needsSign = fmt === "png" || fmt === "pdf" || fmt === "zip";
     const url =
-      fmt === "png" || fmt === "pdf"
+      needsSign
         ? `/api/v1/jobs/sdc-map/${latestMapResultJobId}/download/${fmt}?sign=${encodeURIComponent(mapActiveClass)}`
         : `/api/v1/jobs/sdc-map/${latestMapResultJobId}/download/${fmt}`;
     window.open(url, "_blank");
@@ -6351,6 +6360,9 @@ function attachHandlers() {
   }
   if (mapDownloadPdfButton) {
     mapDownloadPdfButton.addEventListener("click", () => triggerMapDownload("pdf"));
+  }
+  if (mapDownloadZipButton) {
+    mapDownloadZipButton.addEventListener("click", () => triggerMapDownload("zip"));
   }
   if (mapClearAllEventsButton) {
     mapClearAllEventsButton.addEventListener("click", async () => {
