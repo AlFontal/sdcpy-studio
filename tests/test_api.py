@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
-import zipfile
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,12 @@ from fastapi.testclient import TestClient
 
 from sdcpy_studio.main import create_app
 from sdcpy_studio.schemas import SDCJobRequest
-from sdcpy_studio.service import build_sdc_map_exploration, run_sdc_job
+from sdcpy_studio.service import (
+    _build_event_map_netcdf_bytes,
+    _build_map_lag_payload,
+    build_sdc_map_exploration,
+    run_sdc_job,
+)
 
 
 class InlineJobManager:
@@ -228,6 +233,59 @@ def _series_payload(n: int = 80):
     return ts1.tolist(), ts2.tolist()
 
 
+def test_map_lag_payload_preserves_position_and_timing_cubes():
+    payload = _build_map_lag_payload(
+        lag_maps={
+            "lags": [0, 1],
+            "corr_by_lag": [[[0.4]], [[0.6]]],
+            "driver_rel_time_by_lag": [[[2.0]], [[3.0]]],
+            "timing_by_lag": [[[2.0]], [[2.0]]],
+            "event_count_by_lag": [[[1]], [[2]]],
+        },
+        lats=np.asarray([10.0]),
+        lons=np.asarray([20.0]),
+        coastline=None,
+    )
+
+    assert payload["driver_rel_time_by_lag"] == [[[2.0]], [[3.0]]]
+    assert payload["timing_by_lag"] == [[[2.0]], [[2.0]]]
+
+
+def test_event_map_netcdf_preserves_lag_position_and_timing_cubes():
+    xr = pytest.importorskip("xarray")
+    nc_bytes = _build_event_map_netcdf_bytes(
+        class_results={
+            "positive": {
+                "layers": {"corr_mean": np.asarray([[0.6]])},
+                "lag_maps": {
+                    "lags": [0, 1],
+                    "corr_by_lag": np.asarray([[[0.4]], [[0.6]]]),
+                    "driver_rel_time_by_lag": np.asarray([[[2.0]], [[3.0]]]),
+                    "timing_by_lag": np.asarray([[[2.0]], [[2.0]]]),
+                    "event_count_by_lag": np.asarray([[[1.0]], [[2.0]]]),
+                },
+            },
+            "negative": {
+                "layers": {"corr_mean": np.asarray([[-0.5]])},
+                "lag_maps": {
+                    "lags": [0, 1],
+                    "corr_by_lag": np.asarray([[[-0.3]], [[-0.5]]]),
+                    "driver_rel_time_by_lag": np.asarray([[[-1.0]], [[0.0]]]),
+                    "timing_by_lag": np.asarray([[[-1.0]], [[-1.0]]]),
+                    "event_count_by_lag": np.asarray([[[1.0]], [[1.0]]]),
+                },
+            },
+        },
+        lats=np.asarray([10.0]),
+        lons=np.asarray([20.0]),
+        attrs={"driver_dataset": "driver", "field_dataset": "field"},
+    )
+
+    ds = xr.open_dataset(BytesIO(nc_bytes))
+    assert float(ds["positive_driver_rel_time_by_lag"].sel(lag=1, lat=10.0, lon=20.0)) == pytest.approx(3.0)
+    assert float(ds["positive_timing_by_lag"].sel(lag=1, lat=10.0, lon=20.0)) == pytest.approx(2.0)
+
+
 def _custom_map_driver_csv(n: int = 72) -> str:
     rows = ["date,my_index,other"]
     for i in range(n):
@@ -243,6 +301,11 @@ def _custom_map_driver_three_series_month_end_csv(n: int = 12, start: str = "200
     for i, ts in enumerate(dates):
         rows.append(f"{ts.date()},{np.sin(i / 3):.6f},{np.cos(i / 4):.6f},{np.sin(i / 5):.6f}")
     return "\n".join(rows)
+
+
+def _dataset_to_netcdf_bytes(ds) -> bytes:
+    payload = ds.to_netcdf(engine="scipy")
+    return payload if isinstance(payload, bytes) else bytes(payload)
 
 
 def _custom_map_field_netcdf_bytes() -> bytes:
@@ -262,8 +325,7 @@ def _custom_map_field_netcdf_bytes() -> bytes:
         },
         coords={"time": times, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def _custom_map_field_monthly_2000_netcdf_bytes() -> bytes:
@@ -277,8 +339,7 @@ def _custom_map_field_monthly_2000_netcdf_bytes() -> bytes:
         data_vars={"sst_anom": (("time", "lat", "lon"), values.astype("float32"))},
         coords={"time": times, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def _custom_map_field_singleton_level_netcdf_bytes() -> bytes:
@@ -299,8 +360,7 @@ def _custom_map_field_singleton_level_netcdf_bytes() -> bytes:
         data_vars={"air": (("time", "level", "lat", "lon"), values.astype("float32"))},
         coords={"time": times, "level": levels, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def _custom_map_field_multilevel_netcdf_bytes() -> bytes:
@@ -321,8 +381,7 @@ def _custom_map_field_multilevel_netcdf_bytes() -> bytes:
         data_vars={"air": (("time", "level", "lat", "lon"), values.astype("float32"))},
         coords={"time": times, "level": levels, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def _custom_map_field_multilevel_without_coord_netcdf_bytes() -> bytes:
@@ -337,8 +396,7 @@ def _custom_map_field_multilevel_without_coord_netcdf_bytes() -> bytes:
         data_vars={"air": (("time", "member", "lat", "lon"), values)},
         coords={"time": times, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def _custom_map_field_climatology_netcdf_bytes() -> bytes:
@@ -366,8 +424,7 @@ def _custom_map_field_climatology_netcdf_bytes() -> bytes:
         },
         coords={"time": time, "lat": lats, "lon": lons},
     )
-    payload = ds.to_netcdf()
-    return payload if isinstance(payload, bytes) else bytes(payload)
+    return _dataset_to_netcdf_bytes(ds)
 
 
 def test_root_page_renders():

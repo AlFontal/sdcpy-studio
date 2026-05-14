@@ -1809,13 +1809,18 @@ def _build_event_map_netcdf_bytes(
                 raise ValueError(
                     "Positive and negative lag coordinates must match for NetCDF export."
                 )
-            corr_by_lag = np.asarray(lag_maps.get("corr_by_lag"), dtype=float)
-            event_count_by_lag = np.asarray(lag_maps.get("event_count_by_lag"), dtype=float)
-            data_vars[f"{sign_key}_corr_by_lag"] = (("lag", "lat", "lon"), corr_by_lag)
-            data_vars[f"{sign_key}_event_count_by_lag"] = (
-                ("lag", "lat", "lon"),
-                event_count_by_lag,
-            )
+            for key in (
+                "corr_by_lag",
+                "driver_rel_time_by_lag",
+                "timing_by_lag",
+                "event_count_by_lag",
+            ):
+                if key not in lag_maps:
+                    continue
+                data_vars[f"{sign_key}_{key}"] = (
+                    ("lag", "lat", "lon"),
+                    np.asarray(lag_maps.get(key), dtype=float),
+                )
 
     dataset = xr.Dataset(
         data_vars=data_vars,
@@ -1934,10 +1939,22 @@ def _build_map_lag_payload(
 ) -> dict:
     lags = np.asarray(lag_maps.get("lags") or [], dtype=int)
     corr_by_lag = lag_maps.get("corr_by_lag")
+    driver_rel_time_by_lag = lag_maps.get("driver_rel_time_by_lag")
+    timing_by_lag = lag_maps.get("timing_by_lag")
     event_count_by_lag = lag_maps.get("event_count_by_lag")
     corr_cube = (
         np.asarray(corr_by_lag, dtype=float)
         if corr_by_lag is not None
+        else np.full((len(lags), len(lats), len(lons)), np.nan, dtype=float)
+    )
+    driver_rel_time_cube = (
+        np.asarray(driver_rel_time_by_lag, dtype=float)
+        if driver_rel_time_by_lag is not None
+        else np.full((len(lags), len(lats), len(lons)), np.nan, dtype=float)
+    )
+    timing_cube = (
+        np.asarray(timing_by_lag, dtype=float)
+        if timing_by_lag is not None
         else np.full((len(lags), len(lats), len(lons)), np.nan, dtype=float)
     )
     event_count_cube = (
@@ -1951,6 +1968,8 @@ def _build_map_lag_payload(
         "lags": [int(v) for v in lags.tolist()],
         "coastline": _serialize_coastline_trace(coastline),
         "corr_by_lag": _serialize_optional_cube(corr_cube),
+        "driver_rel_time_by_lag": _serialize_optional_cube(driver_rel_time_cube),
+        "timing_by_lag": _serialize_optional_cube(timing_cube),
         "event_count_by_lag": _serialize_optional_cube(event_count_cube),
     }
 
